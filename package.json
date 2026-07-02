@@ -1,0 +1,28 @@
+{
+  "name": "loom",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -b --pretty false",
+    "test": "vitest run",
+    "build:dsp": "cargo build --manifest-path loom-dsp/Cargo.toml --target wasm32-unknown-unknown --release && node -e \"require('fs').copyFileSync('loom-dsp/target/wasm32-unknown-unknown/release/loom_dsp.wasm','public/loom-dsp.wasm')\""
+  },
+  "dependencies": {
+    "@xyflow/react": "^12.9.3",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "zustand": "^5.0.8"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.12",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.2",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.5",
+    "vitest": "^4.1.9"
+  }
+}
