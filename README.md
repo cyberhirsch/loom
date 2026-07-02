@@ -26,7 +26,11 @@ Press **▶ weave**. The ensemble is already patched and starts making music in 
 - **Seeds** — visible on every player; same seed = same music (verified by test). **↻ re-roll** = new take.
 - **LFO node** — patch its Signal output into any player's **density** input; evaluated at loop boundaries (the modulated value shows live on the player, in blue).
 - **Tension node** — the ensemble's energy curve as a CV source (the music listening to itself, PRD §5.2). Patch cv → density and the loop self-balances: saturated loops breathe out, sparse loops build. Add more modulators from the top bar (**+ lfo**, **+ tension**).
-- **Default voices** (PRD §5.2 instant sound) — marimba-ish melody, pad chords, square bass, synthesized kit, pluck arp, shared reverb.
+- **The audio path is nodes** (PRD §5: the patch IS the signal flow) — players emit **notes only**; nothing sounds until the notes reach an instrument whose signal reaches **Out**. Cut a cable and that player goes silent (engine-enforced, not cosmetic).
+  - **Synth nodes** (Source) — notes in → signal out: waveform, attack, release, filter cutoff per instrument (lead / pad / sub / pluck presets in the default patch).
+  - **Kit node** — the synthesized drum instrument (swept-sine kick, noise snare & hat).
+  - **Expression node** (Note FX, PRD §5.2) — sits in a note path: **portamento** (pitch glides between notes, in the Rust DSP) and **scale-locked glissando** (quiet scale-run grace notes into leaps of 3+ degrees — can never leave the key).
+  - **Delay node** — tempo-synced ping-pong echo (1/8 · dotted 1/8 · 1/4, feedback, mix); **Reverb node** — the shared room (freeverb-lite); **Out node** — master level + soft-clip limiter. Which FX a player's signal passes through determines its sends.
 - **Live pattern previews** in every player node, with playhead.
 - **Autosave** — the patch (nodes, cables, conductor, seeds) persists across reloads (localStorage); **reset** in the top bar restores the default ensemble.
 - **↧ midi** — export the current loop (4 repeats) as a Standard MIDI File: one track per player, drums on GM channel 10. Deterministic (same seed = same file, by test) — open it in any DAW.

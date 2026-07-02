@@ -26,6 +26,10 @@
   /* category tints (PRD §7.1) */
   --cat-player: #ffc24b;
   --cat-modulator: #d29cff;
+  --cat-source: #6fd3c3;
+  --cat-notefx: #e88fb1;
+  --cat-fx: #8fb7e8;
+  --cat-io: #71c9a3;
   --header-h: 40px;
 }
 
@@ -42,8 +46,11 @@ button { color: inherit; }
   background: #151719; border-bottom: 1px solid var(--line);
   font-size: 12px; color: var(--muted);
 }
-.top-bar .brand { font-weight: 700; letter-spacing: 0.14em; color: var(--text); font-size: 13px; }
-.top-bar .brand em { color: var(--cat-player); font-style: normal; }
+.top-bar .brand {
+  font-family: 'Cormorant', Georgia, 'Times New Roman', serif;
+  font-style: italic; font-weight: 600; font-size: 21px;
+  letter-spacing: 0.04em; color: var(--text); line-height: 1;
+}
 .play-btn {
   display: flex; align-items: center; gap: 7px; height: 26px; padding: 0 14px;
   background: var(--bg-3); border: 1px solid var(--line-light); border-radius: 3px;
@@ -62,6 +69,7 @@ button { color: inherit; }
 .graph-canvas { min-height: 0; background: #101113; }
 .react-flow__attribution { display: none; }
 .react-flow__edge-path { stroke: var(--cable-signal); stroke-width: 1.6; }
+.react-flow__edge.edge-note .react-flow__edge-path { stroke: var(--cable-note); }
 .react-flow__handle {
   width: 8px; height: 8px; border: 1px solid #0a0b0c; border-radius: 50%;
 }
@@ -84,6 +92,10 @@ button { color: inherit; }
 .loom-node__icon { font-size: 13px; }
 .loom-node--player .loom-node__icon { color: var(--cat-player); }
 .loom-node--modulator .loom-node__icon { color: var(--cat-modulator); }
+.loom-node--source .loom-node__icon { color: var(--cat-source); }
+.loom-node--notefx .loom-node__icon { color: var(--cat-notefx); }
+.loom-node--fx .loom-node__icon { color: var(--cat-fx); }
+.loom-node--io .loom-node__icon { color: var(--cat-io); }
 .node-status { margin-left: auto; width: 6px; height: 6px; border-radius: 50%; background: #3a3e43; }
 .node-status--live { background: var(--success); box-shadow: 0 0 5px rgba(113, 201, 163, 0.7); }
 

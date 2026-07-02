@@ -11,6 +11,10 @@ import { ArrangerNode } from '../ui/nodes/ArrangerNode';
 import { PlayerNode } from '../ui/nodes/PlayerNode';
 import { LfoNode } from '../ui/nodes/LfoNode';
 import { TensionNode } from '../ui/nodes/TensionNode';
+import { SynthNode } from '../ui/nodes/SynthNode';
+import { ExpressionNode } from '../ui/nodes/ExpressionNode';
+import { FxNode } from '../ui/nodes/FxNode';
+import { OutNode } from '../ui/nodes/OutNode';
 import { MixerBar } from '../ui/MixerBar';
 import { TimelineStrip } from '../ui/TimelineStrip';
 import type { TemplateId } from '../graph/store';
@@ -26,6 +30,12 @@ const nodeTypes = {
   arp: PlayerNode,
   lfo: LfoNode,
   tension: TensionNode,
+  synth: SynthNode,
+  kit: SynthNode,
+  expression: ExpressionNode,
+  delay: FxNode,
+  reverb: FxNode,
+  out: OutNode,
 };
 
 export function App() {
@@ -58,7 +68,7 @@ export function App() {
   return (
     <div className="app-shell">
       <div className="top-bar">
-        <span className="brand">LOOM <em>M0</em></span>
+        <span className="brand">Loom</span>
         <button className={`play-btn${playing ? ' on' : ''}`} onClick={() => (playing ? engine.stop() : void engine.start())}>
           {playing ? '■ stop' : '▶ weave'}
         </button>
@@ -85,7 +95,7 @@ export function App() {
           <span>
             <b>{NOTE_NAMES[conductor.liveKeyIndex]} {SCALES[conductor.liveScaleId].name}</b> · {conductor.tempo} bpm
           </span>
-          <span>theory-aware generative prototype — PRD M0</span>
+          <span>theory-aware generative music</span>
         </div>
       </div>
       <div className="graph-canvas" style={{ position: 'relative' }}>

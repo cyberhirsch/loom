@@ -20,6 +20,7 @@ class LoomProcessor extends AudioWorkletProcessor {
     this.loop = 0;
     this.patterns = null; // { kind: [{step, midis[], vel, lenSteps}] } + drums [{step,lane,vel}]
     this.pending = null;
+    this.delayCfg = { division: 3, feedback: 0.35, mix: 0.25 }; // division in steps (3 = dotted 8th)
     this.port.onmessage = (e) => this.onMessage(e.data);
   }
 
@@ -48,6 +49,25 @@ class LoomProcessor extends AudioWorkletProcessor {
       case 'mute':
         if (this.wasm) this.wasm.set_mute(KIND_INDEX[msg.kind], msg.value ? 1 : 0);
         break;
+      case 'voice':
+        if (this.wasm) this.wasm.set_voice(KIND_INDEX[msg.kind], msg.wave, msg.attack, msg.release, msg.cutoff);
+        break;
+      case 'sends':
+        if (this.wasm) this.wasm.set_sends(KIND_INDEX[msg.kind], msg.rev, msg.del);
+        break;
+      case 'glide':
+        if (this.wasm) this.wasm.set_glide(KIND_INDEX[msg.kind], msg.seconds * sampleRate);
+        break;
+      case 'reverb':
+        if (this.wasm) this.wasm.set_reverb(msg.mix);
+        break;
+      case 'master':
+        if (this.wasm) this.wasm.set_master(msg.value);
+        break;
+      case 'delay':
+        this.delayCfg = { division: msg.division, feedback: msg.feedback, mix: msg.mix };
+        this.syncDelay();
+        break;
       case 'start':
         this.sampleCursor = 0;
         this.step = -1;
@@ -66,8 +86,9 @@ class LoomProcessor extends AudioWorkletProcessor {
   }
 
   syncDelay() {
-    // dotted-eighth ping-pong, synced to tempo
-    if (this.wasm?.set_delay) this.wasm.set_delay(Math.floor(this.samplesPerStep() * 3), 0.35, 0.25);
+    // tempo-synced ping-pong; division/feedback/mix come from the Delay node
+    const d = this.delayCfg;
+    if (this.wasm?.set_delay) this.wasm.set_delay(Math.floor(this.samplesPerStep() * d.division), d.feedback, d.mix);
   }
 
   samplesPerStep() {

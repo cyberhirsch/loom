@@ -71,6 +71,8 @@ struct Voice {
     kind: u32,
     phase: f32,
     freq: f32,
+    freq_target: f32,
+    glide_coef: f32, // per-sample freq multiplier; 1.0 = no glide
     level: f32,
     vel: f32,
     remaining: i64, // samples until release
@@ -80,7 +82,7 @@ struct Voice {
 
 impl Voice {
     const fn new() -> Self {
-        Voice { stage: Stage::Off, kind: 0, phase: 0.0, freq: 440.0, level: 0.0, vel: 1.0, remaining: 0, lp: 0.0, pan: 0.0 }
+        Voice { stage: Stage::Off, kind: 0, phase: 0.0, freq: 440.0, freq_target: 440.0, glide_coef: 1.0, level: 0.0, vel: 1.0, remaining: 0, lp: 0.0, pan: 0.0 }
     }
 }
 
@@ -131,6 +133,14 @@ struct Engine {
     hat: NoiseHit,
     gains: [f32; NUM_KINDS],
     mutes: [bool; NUM_KINDS],
+    // per-kind voice/routing state, set by the host from the node graph
+    voice_params: [VoiceParams; NUM_KINDS],
+    rev_sends: [f32; NUM_KINDS],
+    delay_sends: [f32; NUM_KINDS],
+    glide_samples: [f32; NUM_KINDS],
+    last_midi: [f32; NUM_KINDS],
+    reverb_out: f32,
+    master: f32,
     combs_l: [Comb; 4],
     combs_r: [Comb; 4],
     ap_l: Allpass,
@@ -178,6 +188,19 @@ impl Engine {
             },
             gains: [0.35, 0.16, 0.32, 0.2, 0.4],
             mutes: [false; NUM_KINDS],
+            voice_params: [params_for(0), params_for(1), params_for(2), params_for(3), params_for(4)],
+            rev_sends: [
+                params_for(0).send,
+                params_for(1).send,
+                params_for(2).send,
+                params_for(3).send,
+                params_for(4).send,
+            ],
+            delay_sends: [delay_send(0), delay_send(1), delay_send(2), delay_send(3), delay_send(4)],
+            glide_samples: [0.0; NUM_KINDS],
+            last_midi: [0.0; NUM_KINDS],
+            reverb_out: 0.28,
+            master: 1.0,
             combs_l: [mk_comb(COMBS[0], 0), mk_comb(COMBS[1], 0), mk_comb(COMBS[2], 0), mk_comb(COMBS[3], 0)],
             combs_r: [mk_comb(COMBS[0], 23), mk_comb(COMBS[1], 23), mk_comb(COMBS[2], 23), mk_comb(COMBS[3], 23)],
             ap_l: Allpass { buf: [0.0; MAX_AP], len: (AP_LEN as f32 * scale) as usize % MAX_AP, idx: 0 },
@@ -222,12 +245,25 @@ impl Engine {
             }
         }
         self.rr = (self.rr + 1) % MAX_VOICES;
-        let freq = 440.0 * f32::powf(2.0, (midi - 69.0) / 12.0);
+        let target = 440.0 * f32::powf(2.0, (midi - 69.0) / 12.0);
+        // portamento (Expression node): start at the previous note's pitch and
+        // glide exponentially to the target over glide_samples
+        let gs = self.glide_samples[kind as usize];
+        let last = self.last_midi[kind as usize];
+        let (freq, coef) = if gs > 1.0 && last > 0.0 && (last - midi).abs() > 0.01 {
+            let start = 440.0 * f32::powf(2.0, (last - 69.0) / 12.0);
+            (start, f32::powf(target / start, 1.0 / gs))
+        } else {
+            (target, 1.0)
+        };
+        self.last_midi[kind as usize] = midi;
         self.voices[slot] = Voice {
             stage: Stage::Attack,
             kind,
             phase: 0.0,
             freq,
+            freq_target: target,
+            glide_coef: coef,
             level: 0.0,
             vel,
             remaining: dur_samples as i64,
@@ -268,7 +304,7 @@ impl Engine {
                     if v.stage == Stage::Off {
                         continue;
                     }
-                    let p = params_for(v.kind);
+                    let p = self.voice_params[v.kind as usize];
                     // envelope
                     match v.stage {
                         Stage::Attack => {
@@ -300,6 +336,16 @@ impl Engine {
                     if v.remaining <= 0 && v.stage != Stage::Release {
                         v.stage = Stage::Release;
                     }
+                    // portamento glide toward the target pitch
+                    if v.glide_coef != 1.0 {
+                        v.freq *= v.glide_coef;
+                        if (v.glide_coef > 1.0 && v.freq >= v.freq_target)
+                            || (v.glide_coef < 1.0 && v.freq <= v.freq_target)
+                        {
+                            v.freq = v.freq_target;
+                            v.glide_coef = 1.0;
+                        }
+                    }
                     // oscillator
                     v.phase += v.freq * inv_sr;
                     if v.phase >= 1.0 {
@@ -320,8 +366,8 @@ impl Engine {
                     let r = s * g * (1.0 + v.pan * 0.5);
                     dry_l += l;
                     dry_r += r;
-                    wet_in += s * g * p.send;
-                    del_in += s * g * delay_send(v.kind);
+                    wet_in += s * g * self.rev_sends[v.kind as usize];
+                    del_in += s * g * self.delay_sends[v.kind as usize];
                 }
 
                 // drums
@@ -424,8 +470,8 @@ impl Engine {
                 ap.buf[ap.idx] = rev_r + b * 0.5;
                 ap.idx = (ap.idx + 1) % ap.len.max(1);
 
-                OUT_L[i] = soft_clip(dry_l + out_l_ap * 0.28);
-                OUT_R[i] = soft_clip(dry_r + out_r_ap * 0.28);
+                OUT_L[i] = soft_clip((dry_l + out_l_ap * self.reverb_out) * self.master);
+                OUT_R[i] = soft_clip((dry_r + out_r_ap * self.reverb_out) * self.master);
             }
         }
     }
@@ -505,6 +551,85 @@ pub extern "C" fn set_delay(samples: u32, feedback: f32, mix: f32) {
             e.delay.samples = (samples as usize).clamp(1, MAX_DELAY - 1);
             e.delay.feedback = feedback.clamp(0.0, 0.9);
             e.delay.mix = mix.clamp(0.0, 1.0);
+        }
+    }
+}
+
+/// Synth node → per-kind voice timbre (wave 0..3, envelope, filter cutoff).
+#[no_mangle]
+pub extern "C" fn set_voice(kind: u32, wave: u32, attack: f32, release: f32, cutoff: f32) {
+    if !attack.is_finite() || !release.is_finite() || !cutoff.is_finite() {
+        return;
+    }
+    unsafe {
+        if let Some(e) = ENGINE.as_mut() {
+            if (kind as usize) < NUM_KINDS {
+                let p = &mut e.voice_params[kind as usize];
+                p.wave = wave.min(3);
+                p.attack = attack.clamp(0.0005, 2.0);
+                p.release = release.clamp(0.02, 4.0);
+                p.cutoff = cutoff.clamp(80.0, 12000.0);
+            }
+        }
+    }
+}
+
+/// FX routing from the node graph: how much of a kind feeds reverb / delay.
+#[no_mangle]
+pub extern "C" fn set_sends(kind: u32, rev: f32, del: f32) {
+    if !rev.is_finite() || !del.is_finite() {
+        return;
+    }
+    unsafe {
+        if let Some(e) = ENGINE.as_mut() {
+            if (kind as usize) < NUM_KINDS {
+                e.rev_sends[kind as usize] = rev.clamp(0.0, 1.0);
+                e.delay_sends[kind as usize] = del.clamp(0.0, 1.0);
+            }
+        }
+    }
+}
+
+/// Expression node portamento: glide time in samples (0 = off).
+#[no_mangle]
+pub extern "C" fn set_glide(kind: u32, samples: f32) {
+    if !samples.is_finite() {
+        return;
+    }
+    unsafe {
+        if let Some(e) = ENGINE.as_mut() {
+            if (kind as usize) < NUM_KINDS {
+                e.glide_samples[kind as usize] = samples.clamp(0.0, 96000.0);
+                if samples <= 0.0 {
+                    e.last_midi[kind as usize] = 0.0;
+                }
+            }
+        }
+    }
+}
+
+/// Reverb node: wet return level.
+#[no_mangle]
+pub extern "C" fn set_reverb(mix: f32) {
+    if !mix.is_finite() {
+        return;
+    }
+    unsafe {
+        if let Some(e) = ENGINE.as_mut() {
+            e.reverb_out = mix.clamp(0.0, 0.7);
+        }
+    }
+}
+
+/// Out node: master level (linear).
+#[no_mangle]
+pub extern "C" fn set_master(level: f32) {
+    if !level.is_finite() {
+        return;
+    }
+    unsafe {
+        if let Some(e) = ENGINE.as_mut() {
+            e.master = level.clamp(0.0, 1.5);
         }
     }
 }

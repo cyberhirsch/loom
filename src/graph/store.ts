@@ -71,12 +71,30 @@ const defaultPlayer = (seed: number) => ({
   volume: -8,
 });
 
+const noteEdge = (source: string, target: string): Edge => ({
+  id: `${source}→${target}`,
+  source,
+  sourceHandle: 'notes-out',
+  target,
+  targetHandle: 'notes-in',
+  className: 'edge-note',
+});
+
+const signalEdge = (source: string, target: string): Edge => ({
+  id: `${source}→${target}`,
+  source,
+  sourceHandle: 'signal-out',
+  target,
+  targetHandle: 'signal-in',
+  className: 'edge-signal',
+});
+
 const initialNodes: LoomNode[] = [
-  { id: 'conductor', type: 'conductor', position: { x: 40, y: 200 }, data: {} },
+  { id: 'conductor', type: 'conductor', position: { x: 40, y: 140 }, data: {} },
   {
     id: 'arranger',
     type: 'arranger',
-    position: { x: 40, y: 520 },
+    position: { x: 40, y: 560 },
     data: {
       enabled: false,
       sections: [
@@ -86,12 +104,25 @@ const initialNodes: LoomNode[] = [
       ],
     },
   },
+  { id: 'lfo1', type: 'lfo', position: { x: 340, y: 40 }, data: { rate: 0.5, depth: 0.35 } },
+  // players — notes only; sound requires a route to a synth and on to out
+  { id: 'arp', type: 'arp', position: { x: 700, y: -230 }, data: { ...defaultPlayer(505), density: 0.45, volume: -14, register: 1 } },
   { id: 'melody', type: 'melody', position: { x: 700, y: 20 }, data: { ...defaultPlayer(101), volume: -9 } },
-  { id: 'chords', type: 'chords', position: { x: 700, y: 250 }, data: { ...defaultPlayer(202), density: 0.5, volume: -16 } },
-  { id: 'bass', type: 'bass', position: { x: 700, y: 480 }, data: { ...defaultPlayer(303), density: 0.5, volume: -10 } },
-  { id: 'drums', type: 'drums', position: { x: 340, y: 480 }, data: { ...defaultPlayer(404), density: 0.6, volume: -8 } },
-  { id: 'arp', type: 'arp', position: { x: 1060, y: 250 }, data: { ...defaultPlayer(505), density: 0.45, volume: -14, register: 1 } },
-  { id: 'lfo1', type: 'lfo', position: { x: 340, y: 60 }, data: { rate: 0.5, depth: 0.35 } },
+  { id: 'chords', type: 'chords', position: { x: 700, y: 270 }, data: { ...defaultPlayer(202), density: 0.5, volume: -16 } },
+  { id: 'bass', type: 'bass', position: { x: 700, y: 520 }, data: { ...defaultPlayer(303), density: 0.5, volume: -10 } },
+  { id: 'drums', type: 'drums', position: { x: 700, y: 770 }, data: { ...defaultPlayer(404), density: 0.6, volume: -8 } },
+  // note FX (PRD §5.2 Expression): portamento + scale-locked glissando in the melody's note path
+  { id: 'expr-melody', type: 'expression', position: { x: 990, y: 60 }, data: { portamento: 0.15, glissando: true } },
+  // instruments (Source): notes → signal
+  { id: 'synth-pluck', type: 'synth', position: { x: 1250, y: -230 }, data: { label: 'pluck', wave: 1, attack: 0.002, release: 0.25, cutoff: 6500 } },
+  { id: 'synth-lead', type: 'synth', position: { x: 1250, y: 20 }, data: { label: 'lead', wave: 1, attack: 0.004, release: 0.5, cutoff: 5200 } },
+  { id: 'synth-pad', type: 'synth', position: { x: 1250, y: 270 }, data: { label: 'pad', wave: 0, attack: 0.1, release: 1.3, cutoff: 3400 } },
+  { id: 'synth-bass', type: 'synth', position: { x: 1250, y: 520 }, data: { label: 'sub', wave: 2, attack: 0.008, release: 0.3, cutoff: 900 } },
+  { id: 'kit', type: 'kit', position: { x: 1250, y: 770 }, data: {} },
+  // FX chain and master out
+  { id: 'fx-delay', type: 'delay', position: { x: 1530, y: -90 }, data: { division: 3, feedback: 0.35, mix: 0.25 } },
+  { id: 'fx-reverb', type: 'reverb', position: { x: 1530, y: 360 }, data: { mix: 0.28 } },
+  { id: 'out', type: 'out', position: { x: 1790, y: 360 }, data: { level: 0 } },
 ];
 
 const initialEdges: Edge[] = [
@@ -103,10 +134,27 @@ const initialEdges: Edge[] = [
     targetHandle: 'density-in',
     className: 'edge-signal',
   },
+  // note paths: player → (expression) → instrument
+  noteEdge('arp', 'synth-pluck'),
+  noteEdge('melody', 'expr-melody'),
+  noteEdge('expr-melody', 'synth-lead'),
+  noteEdge('chords', 'synth-pad'),
+  noteEdge('bass', 'synth-bass'),
+  noteEdge('drums', 'kit'),
+  // signal paths: instrument → fx → out
+  signalEdge('synth-pluck', 'fx-delay'),
+  signalEdge('synth-lead', 'fx-delay'),
+  signalEdge('fx-delay', 'fx-reverb'),
+  signalEdge('synth-pad', 'fx-reverb'),
+  signalEdge('kit', 'fx-reverb'),
+  signalEdge('synth-bass', 'out'),
+  signalEdge('fx-reverb', 'out'),
 ];
 
-/** Project persistence (PRD §6.10 seed): autosave patch + conductor to localStorage. */
-const SAVE_KEY = 'loom-project-v1';
+/** Project persistence (PRD §6.10 seed): autosave patch + conductor to localStorage.
+ *  v2: the audio path became explicit nodes (synth/kit/expression/fx/out) — v1 saves
+ *  have no route to `out`, so they start fresh on the new default patch. */
+const SAVE_KEY = 'loom-project-v2';
 
 interface SavedProject {
   nodes: LoomNode[];
@@ -172,9 +220,15 @@ export const useLoomStore = create<LoomStore>((set, get) => ({
   onNodesChange: (changes) => set({ nodes: applyNodeChanges(changes, get().nodes) }),
   onEdgesChange: (changes) => set({ edges: applyEdgeChanges(changes, get().edges) }),
   onConnect: (connection) => {
-    // Only Signal cables exist as patchable edges in M0: LFO cv-out -> density-in
-    if (connection.sourceHandle !== 'cv-out' || connection.targetHandle !== 'density-in') return;
-    set({ edges: addEdge({ ...connection, className: 'edge-signal' }, get().edges) });
+    // typed cables (PRD §5.1): CV → density, Note → note-in, Signal → signal-in
+    const { sourceHandle, targetHandle } = connection;
+    const ok =
+      (sourceHandle === 'cv-out' && targetHandle === 'density-in') ||
+      (sourceHandle === 'notes-out' && targetHandle === 'notes-in') ||
+      (sourceHandle === 'signal-out' && targetHandle === 'signal-in');
+    if (!ok) return;
+    const className = sourceHandle === 'notes-out' ? 'edge-note' : 'edge-signal';
+    set({ edges: addEdge({ ...connection, className }, get().edges) });
   },
   updateNodeData: (id, patch) =>
     set({
@@ -344,6 +398,10 @@ const TEMPLATES: Record<TemplateId, Template> = {
     },
   },
 };
+
+if (import.meta.env.DEV) {
+  (window as unknown as Record<string, unknown>).__loomStore = useLoomStore;
+}
 
 // autosave: any change to patch or conductor persists (debounced)
 useLoomStore.subscribe((state, prev) => {

@@ -4,10 +4,21 @@ import type { NoteEvent } from '../theory/melody';
 import type { DrumEvent } from '../theory/parts';
 
 /** Node categories (PRD §5) — tint source for icons. */
-export type NodeCategory = 'player' | 'modulator' | 'io';
+export type NodeCategory = 'player' | 'source' | 'notefx' | 'fx' | 'modulator' | 'io';
 
 export type PlayerKind = 'melody' | 'chords' | 'bass' | 'drums' | 'arp';
-export type LoomNodeType = 'conductor' | 'arranger' | PlayerKind | 'lfo' | 'tension';
+export type LoomNodeType =
+  | 'conductor'
+  | 'arranger'
+  | PlayerKind
+  | 'lfo'
+  | 'tension'
+  | 'synth'
+  | 'kit'
+  | 'expression'
+  | 'delay'
+  | 'reverb'
+  | 'out';
 
 /** Arranger (PRD §5.2): generative structure — a sequencer of sections. */
 export interface ArrangerSection {
@@ -41,6 +52,35 @@ export interface PlayerData extends Record<string, unknown> {
 export interface LfoData extends Record<string, unknown> {
   rate: number; // cycles per loop
   depth: number; // 0..1
+}
+
+/** Synth node (Source, PRD §5.2): notes in → signal out. Timbre of one player's voice bank. */
+export interface SynthData extends Record<string, unknown> {
+  label: string;
+  wave: number; // 0 sine, 1 triangle, 2 square, 3 saw
+  attack: number; // seconds
+  release: number; // seconds
+  cutoff: number; // Hz
+}
+
+/** Expression node (Note FX, PRD §5.2): portamento + scale-locked glissando. */
+export interface ExpressionData extends Record<string, unknown> {
+  portamento: number; // 0..1 → glide time
+  glissando: boolean; // scale-run into leaps
+}
+
+export interface DelayData extends Record<string, unknown> {
+  division: number; // delay time in steps (2 = 1/8, 3 = dotted 1/8, 4 = 1/4)
+  feedback: number; // 0..0.85
+  mix: number; // wet return 0..0.6
+}
+
+export interface ReverbData extends Record<string, unknown> {
+  mix: number; // wet return 0..0.6
+}
+
+export interface OutData extends Record<string, unknown> {
+  level: number; // dB
 }
 
 export type LoomNode = Node<Record<string, unknown>, string>;
