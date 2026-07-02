@@ -17,6 +17,8 @@ import { FxNode } from '../ui/nodes/FxNode';
 import { OutNode } from '../ui/nodes/OutNode';
 import { MixerBar } from '../ui/MixerBar';
 import { TimelineStrip } from '../ui/TimelineStrip';
+import { ScriptPanel } from '../ui/ScriptPanel';
+import { useState } from 'react';
 import type { TemplateId } from '../graph/store';
 import { NOTE_NAMES, SCALES } from '../theory/scales';
 
@@ -49,6 +51,7 @@ export function App() {
   const addModulator = useLoomStore((s) => s.addModulator);
   const resetProject = useLoomStore((s) => s.resetProject);
   const applyTemplate = useLoomStore((s) => s.applyTemplate);
+  const [scriptOpen, setScriptOpen] = useState(false);
 
   const exportMidi = () => {
     const s = useLoomStore.getState();
@@ -77,6 +80,13 @@ export function App() {
         <button className="play-btn" onClick={exportMidi} title="Export the current loop (4 repeats) as a Standard MIDI File">↧ midi</button>
         <button className="play-btn" onClick={() => void bounceWav(4)} title="Bounce the current loop (4 repeats) to WAV — offline render through the WASM DSP, faster than real time">↧ wav</button>
         <button className="play-btn" onClick={resetProject} title="Discard saved project, restore default patch">reset</button>
+        <button
+          className={`play-btn${scriptOpen ? ' on' : ''}`}
+          onClick={() => setScriptOpen(!scriptOpen)}
+          title="The whole patch as LoomScript text — readable and editable by you or any LLM"
+        >
+          ⟨⟩ script
+        </button>
         <select
           className="template-select"
           defaultValue=""
@@ -101,6 +111,7 @@ export function App() {
       <div className="graph-canvas" style={{ position: 'relative' }}>
         <TimelineStrip />
         <MixerBar />
+        {scriptOpen && <ScriptPanel onClose={() => setScriptOpen(false)} />}
         <ReactFlow
           nodes={nodes}
           edges={edges}

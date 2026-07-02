@@ -32,7 +32,8 @@ Press **▶ weave**. The ensemble is already patched and starts making music in 
   - **Expression node** (Note FX, PRD §5.2) — sits in a note path: **portamento** (pitch glides between notes, in the Rust DSP) and **scale-locked glissando** (quiet scale-run grace notes into leaps of 3+ degrees — can never leave the key).
   - **Delay node** — tempo-synced ping-pong echo (1/8 · dotted 1/8 · 1/4, feedback, mix); **Reverb node** — the shared room (freeverb-lite); **Out node** — master level + soft-clip limiter. Which FX a player's signal passes through determines its sends.
 - **Live pattern previews** in every player node, with playhead.
-- **Autosave** — the patch (nodes, cables, conductor, seeds) persists across reloads (localStorage); **reset** in the top bar restores the default ensemble.
+- **LoomScript** (`⟨⟩ script` in the top bar) — the **whole patch as text**, readable and editable by you or any LLM: every node, knob, cable, frozen take, and scene as a line-based DSL ([spec](docs/LOOMSCRIPT.md)). It IS the save format (autosave persists script text; round-trip is idempotent by test), the default ensemble is defined as a script, and `.loom` files save/load through the panel. Typed-cable mistakes come back with line numbers and guidance. A repo skill (`.claude/skills/loomscript`) teaches Claude Code to write patches.
+- **Autosave** — the patch persists across reloads as LoomScript in localStorage; **reset** in the top bar restores the default ensemble.
 - **↧ midi** — export the current loop (4 repeats) as a Standard MIDI File: one track per player, drums on GM channel 10. Deterministic (same seed = same file, by test) — open it in any DAW.
 - **❄ freeze** (capture, PRD §5.2) — capture a player's current take: frozen players play it verbatim, immune to evolve/re-generation (it still transposes with the journey), and the take persists across reloads. Unfreeze to rejoin the generative flow.
 - **↧ wav** (PRD §6.10 offline bounce) — renders the loop through the same WASM DSP in an `OfflineAudioContext`, ~30× faster than real time, to a 16-bit stereo WAV.
@@ -56,6 +57,8 @@ public/
   loom-dsp.wasm     compiled DSP core
   loom-worklet.js   AudioWorklet host: owns the sample clock & step sequencer,
                     double-buffers per-loop patterns, posts step/loop events
+src/script/    LoomScript — the patch as LLM-editable text AND the save format
+               (loomscript.ts parse/serialize, docs/LOOMSCRIPT.md is the spec)
 src/theory/    pure, seeded, deterministic — the crown jewel (PRD M1)
   rng.ts         mulberry32 PRNG
   scales.ts      8 scales/modes, degree→MIDI

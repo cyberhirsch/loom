@@ -10,6 +10,7 @@ import {
 } from '@xyflow/react';
 import type { ConductorState, LoomNode, Pattern } from './types';
 import { randomSeed } from '../theory/rng';
+import { parseLoomScript, serializeProject, type LoomProject, type ScriptError } from '../script/loomscript';
 
 export const STEPS = 16;
 
@@ -51,6 +52,9 @@ interface LoomStore {
   launchScene: (idx: number) => void;
   deleteScene: (idx: number) => void;
   activeScene: number;
+  /** LoomScript (docs/LOOMSCRIPT.md): the patch as LLM-editable text */
+  scriptText: () => string;
+  applyScript: (text: string) => ScriptError[] | null;
 }
 
 export type TemplateId = 'ambient' | 'lofi' | 'techno';
@@ -61,132 +65,72 @@ export interface Scene {
   conductor: Pick<ConductorState, 'keyIndex' | 'scaleId' | 'tempo' | 'evolveOn' | 'journeyOn'>;
 }
 
-const defaultPlayer = (seed: number) => ({
-  seed,
-  density: 0.55,
-  adventurousness: 0.35,
-  syncopation: 0.3,
-  register: 0,
-  mute: false,
-  volume: -8,
-});
+/** The default patch IS a LoomScript document (docs/LOOMSCRIPT.md) — the same
+ *  format the autosave persists and any LLM can read and edit. */
+export const DEFAULT_SCRIPT = `# Loom — default ensemble (LoomScript v1)
+loom 1
 
-const noteEdge = (source: string, target: string): Edge => ({
-  id: `${source}→${target}`,
-  source,
-  sourceHandle: 'notes-out',
-  target,
-  targetHandle: 'notes-in',
-  className: 'edge-note',
-});
+conductor key=C scale=minor_pent tempo=102 evolve=off journey=off every=4 @ 40,140
+arranger off @ 40,560
+section "A · sparse" loops=4 intensity=0.65
+section "B · full" loops=4 intensity=1
+section "C · lift" loops=2 intensity=1.2 journey=1
 
-const signalEdge = (source: string, target: string): Edge => ({
-  id: `${source}→${target}`,
-  source,
-  sourceHandle: 'signal-out',
-  target,
-  targetHandle: 'signal-in',
-  className: 'edge-signal',
-});
+arp    seed=505 density=0.45 register=1 volume=-14 @ 700,-230
+melody seed=101 density=0.55 adventure=0.35 volume=-9 @ 700,20
+chords seed=202 density=0.5 volume=-16 @ 700,270
+bass   seed=303 density=0.5 volume=-10 @ 700,520
+drums  seed=404 density=0.6 syncopate=0.3 volume=-8 @ 700,770
 
-const initialNodes: LoomNode[] = [
-  { id: 'conductor', type: 'conductor', position: { x: 40, y: 140 }, data: {} },
-  {
-    id: 'arranger',
-    type: 'arranger',
-    position: { x: 40, y: 560 },
-    data: {
-      enabled: false,
-      sections: [
-        { name: 'A · sparse', loops: 4, intensity: 0.65, journeyStop: -1 },
-        { name: 'B · full', loops: 4, intensity: 1.0, journeyStop: -1 },
-        { name: 'C · lift', loops: 2, intensity: 1.2, journeyStop: 1 },
-      ],
-    },
-  },
-  { id: 'lfo1', type: 'lfo', position: { x: 340, y: 40 }, data: { rate: 0.5, depth: 0.35 } },
-  // players — notes only; sound requires a route to a synth and on to out
-  { id: 'arp', type: 'arp', position: { x: 700, y: -230 }, data: { ...defaultPlayer(505), density: 0.45, volume: -14, register: 1 } },
-  { id: 'melody', type: 'melody', position: { x: 700, y: 20 }, data: { ...defaultPlayer(101), volume: -9 } },
-  { id: 'chords', type: 'chords', position: { x: 700, y: 270 }, data: { ...defaultPlayer(202), density: 0.5, volume: -16 } },
-  { id: 'bass', type: 'bass', position: { x: 700, y: 520 }, data: { ...defaultPlayer(303), density: 0.5, volume: -10 } },
-  { id: 'drums', type: 'drums', position: { x: 700, y: 770 }, data: { ...defaultPlayer(404), density: 0.6, volume: -8 } },
-  // note FX (PRD §5.2 Expression): portamento + scale-locked glissando in the melody's note path
-  { id: 'expr-melody', type: 'expression', position: { x: 990, y: 60 }, data: { portamento: 0.15, glissando: true } },
-  // instruments (Source): notes → signal
-  { id: 'synth-pluck', type: 'synth', position: { x: 1250, y: -230 }, data: { label: 'pluck', wave: 1, attack: 0.002, release: 0.25, cutoff: 6500 } },
-  { id: 'synth-lead', type: 'synth', position: { x: 1250, y: 20 }, data: { label: 'lead', wave: 1, attack: 0.004, release: 0.5, cutoff: 5200 } },
-  { id: 'synth-pad', type: 'synth', position: { x: 1250, y: 270 }, data: { label: 'pad', wave: 0, attack: 0.1, release: 1.3, cutoff: 3400 } },
-  { id: 'synth-bass', type: 'synth', position: { x: 1250, y: 520 }, data: { label: 'sub', wave: 2, attack: 0.008, release: 0.3, cutoff: 900 } },
-  { id: 'kit', type: 'kit', position: { x: 1250, y: 770 }, data: {} },
-  // FX chain and master out
-  { id: 'fx-delay', type: 'delay', position: { x: 1530, y: -90 }, data: { division: 3, feedback: 0.35, mix: 0.25 } },
-  { id: 'fx-reverb', type: 'reverb', position: { x: 1530, y: 360 }, data: { mix: 0.28 } },
-  { id: 'out', type: 'out', position: { x: 1790, y: 360 }, data: { level: 0 } },
-];
+lfo1:    lfo rate=0.5 depth=0.35 @ 340,40
+expr1:   expression portamento=0.15 glissando=on @ 990,60
+pluck:   synth wave=triangle attack=0.002 release=0.25 cutoff=6500 @ 1250,-230
+lead:    synth wave=triangle attack=0.004 release=0.5 cutoff=5200 @ 1250,20
+pad:     synth wave=sine attack=0.1 release=1.3 cutoff=3400 @ 1250,270
+sub:     synth wave=square attack=0.008 release=0.3 cutoff=900 @ 1250,520
+kit1:    kit @ 1250,770
+delay1:  delay time=1/8d feedback=0.35 mix=0.25 @ 1530,-90
+reverb1: reverb mix=0.28 @ 1530,360
+out level=0 @ 1790,360
 
-const initialEdges: Edge[] = [
-  {
-    id: 'lfo1-melody',
-    source: 'lfo1',
-    sourceHandle: 'cv-out',
-    target: 'melody',
-    targetHandle: 'density-in',
-    className: 'edge-signal',
-  },
-  // note paths: player → (expression) → instrument
-  noteEdge('arp', 'synth-pluck'),
-  noteEdge('melody', 'expr-melody'),
-  noteEdge('expr-melody', 'synth-lead'),
-  noteEdge('chords', 'synth-pad'),
-  noteEdge('bass', 'synth-bass'),
-  noteEdge('drums', 'kit'),
-  // signal paths: instrument → fx → out
-  signalEdge('synth-pluck', 'fx-delay'),
-  signalEdge('synth-lead', 'fx-delay'),
-  signalEdge('fx-delay', 'fx-reverb'),
-  signalEdge('synth-pad', 'fx-reverb'),
-  signalEdge('kit', 'fx-reverb'),
-  signalEdge('synth-bass', 'out'),
-  signalEdge('fx-reverb', 'out'),
-];
+melody -> expr1 -> lead -> delay1 -> reverb1 -> out
+arp -> pluck -> delay1
+chords -> pad -> reverb1
+bass -> sub -> out
+drums -> kit1 -> reverb1
+lfo1 -> melody.density
+`;
 
-/** Project persistence (PRD §6.10 seed): autosave patch + conductor to localStorage.
- *  v2: the audio path became explicit nodes (synth/kit/expression/fx/out) — v1 saves
- *  have no route to `out`, so they start fresh on the new default patch. */
-const SAVE_KEY = 'loom-project-v2';
+const defaultProject = (() => {
+  const r = parseLoomScript(DEFAULT_SCRIPT);
+  if (!r.ok) throw new Error('default LoomScript is invalid: ' + r.errors.map((e) => `${e.line}: ${e.message}`).join('; '));
+  return r.project;
+})();
 
-interface SavedProject {
-  nodes: LoomNode[];
-  edges: Edge[];
-  conductor: ConductorState;
-  scenes?: Scene[];
-}
+const initialNodes = defaultProject.nodes;
+const initialEdges = defaultProject.edges;
 
-function loadProject(): SavedProject | null {
+/** Project persistence (PRD §6.10): the autosave IS LoomScript text —
+ *  one source of truth, readable and editable by any LLM. v3 (script). */
+const SAVE_KEY = 'loom-project-v3';
+
+function loadProject(): LoomProject | null {
   try {
     const raw = localStorage.getItem(SAVE_KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as SavedProject;
-    if (!Array.isArray(parsed.nodes) || !Array.isArray(parsed.edges) || !parsed.conductor) return null;
-    // migration: projects saved before the Arranger existed get the default one
-    if (!parsed.nodes.some((n) => n.type === 'arranger')) {
-      const template = initialNodes.find((n) => n.type === 'arranger');
-      if (template) parsed.nodes.push(JSON.parse(JSON.stringify(template)));
-    }
-    return parsed;
+    const r = parseLoomScript(raw);
+    return r.ok ? r.project : null;
   } catch {
     return null;
   }
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
-function scheduleSave(get: () => { nodes: LoomNode[]; edges: Edge[]; conductor: ConductorState }) {
+function scheduleSave(get: () => { nodes: LoomNode[]; edges: Edge[]; conductor: ConductorState; scenes: Scene[] }) {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     try {
-      const { nodes, edges, conductor, scenes } = get() as unknown as SavedProject & { scenes: Scene[] };
-      localStorage.setItem(SAVE_KEY, JSON.stringify({ nodes, edges, conductor, scenes }));
+      localStorage.setItem(SAVE_KEY, serializeProject(get()));
     } catch {
       /* storage unavailable — nonfatal */
     }
@@ -195,17 +139,7 @@ function scheduleSave(get: () => { nodes: LoomNode[]; edges: Edge[]; conductor: 
 
 const saved = typeof localStorage !== 'undefined' ? loadProject() : null;
 
-const defaultConductor: ConductorState = {
-  keyIndex: 0,
-  scaleId: 'minor_pent',
-  tempo: 102,
-  evolveOn: false,
-  journeyOn: false,
-  modEvery: 4,
-  journeyLabel: 'home',
-  liveKeyIndex: 0,
-  liveScaleId: 'minor_pent',
-};
+const defaultConductor: ConductorState = defaultProject.conductor;
 
 export const useLoomStore = create<LoomStore>((set, get) => ({
   nodes: saved?.nodes ?? initialNodes,
@@ -313,6 +247,21 @@ export const useLoomStore = create<LoomStore>((set, get) => ({
   },
   deleteScene: (idx) =>
     set({ scenes: get().scenes.filter((_, i) => i !== idx), activeScene: -1 }),
+  scriptText: () => serializeProject(get()),
+  applyScript: (text) => {
+    const r = parseLoomScript(text);
+    if (!r.ok) return r.errors;
+    set({
+      nodes: r.project.nodes,
+      edges: r.project.edges,
+      conductor: r.project.conductor,
+      scenes: r.project.scenes,
+      patterns: {},
+      effDensity: {},
+      activeScene: -1,
+    });
+    return null;
+  },
   applyTemplate: (id) => {
     const t = TEMPLATES[id];
     if (!t) return;
@@ -399,7 +348,7 @@ const TEMPLATES: Record<TemplateId, Template> = {
   },
 };
 
-if (import.meta.env.DEV) {
+if (import.meta.env.DEV && typeof window !== 'undefined') {
   (window as unknown as Record<string, unknown>).__loomStore = useLoomStore;
 }
 
