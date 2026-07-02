@@ -1,6 +1,8 @@
 # Loom — theory-aware generative music on a node canvas
 
-M0 (playable generative prototype) **and M2's core (real audio engine)** of the PRD are built: the throwaway Tone.js engine has been replaced by a **Rust→WASM DSP core hosted in an AudioWorklet** — the §8 architecture, for real. See [PRD.md](PRD.md) for the full product design.
+**▶ Live: https://cyberhirsch.github.io/loom/**
+
+Compose by directing an ensemble of theory-aware players instead of placing notes. Rust→WASM DSP in an AudioWorklet, React Flow canvas, seeded & deterministic. See [PRD.md](PRD.md) for the full product design and milestone status.
 
 ## Run it
 
@@ -33,6 +35,10 @@ Press **▶ weave**. The ensemble is already patched and starts making music in 
 - **Mixer bar** (PRD §6.8) — channel strips derived from the graph; strips and node knobs edit the same store, so they're bidirectional by construction.
 - **Arranger node** (PRD §5.2 generative structure) — a sequencer of sections (name, length in loops, intensity, journey stop). When *conducting*, sections scale every player's density and advance the Conductor's journey at boundaries: songs get shape (sparse → full → lift) without placing a single note.
 - **Ensemble templates** (PRD §6.11) — *Ambient garden* (Lydian, tension-fed melody, evolving), *Lo-fi trio* (Dorian, swung kit), *Techno engine* (128 bpm, Arranger conducting groove/build/peak/breakdown). Pick one from the top bar and press weave.
+- **Launcher scenes** (PRD §6.7) — snapshot the whole ensemble (+ scene in the mixer bar), launch scenes quantized at loop boundaries; right-click deletes. Persisted with the project.
+- **Timeline strip** (PRD §6.6) — the Arranger's sections rendered across time with a live playhead: the timeline as a *view over structure nodes*, exactly as the PRD resolves it.
+- **Desktop build** (PRD §8/M6) — `npx tauri build --no-bundle` produces `src-tauri/target/release/loom-desktop.exe`, the same app in a native window (launch-verified). The CLAP sidecar will live in this process; `loom-dsp`'s C ABI is the seam.
+- **Deploy** (M7) — pushing to a GitHub remote auto-deploys the web beta via `.github/workflows/deploy.yml` (build + tests + Pages).
 
 ## Architecture
 
