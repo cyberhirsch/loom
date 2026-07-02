@@ -2,3 +2,4 @@ node_modules
 dist
 *.local
 loom-dsp/target
+src-tauri/target

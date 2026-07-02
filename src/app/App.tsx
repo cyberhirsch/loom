@@ -12,6 +12,7 @@ import { PlayerNode } from '../ui/nodes/PlayerNode';
 import { LfoNode } from '../ui/nodes/LfoNode';
 import { TensionNode } from '../ui/nodes/TensionNode';
 import { MixerBar } from '../ui/MixerBar';
+import { TimelineStrip } from '../ui/TimelineStrip';
 import type { TemplateId } from '../graph/store';
 import { NOTE_NAMES, SCALES } from '../theory/scales';
 
@@ -88,6 +89,7 @@ export function App() {
         </div>
       </div>
       <div className="graph-canvas" style={{ position: 'relative' }}>
+        <TimelineStrip />
         <MixerBar />
         <ReactFlow
           nodes={nodes}

@@ -157,3 +157,25 @@ button { color: inherit; }
 }
 .mixer-strip.is-muted { opacity: 0.45; }
 .mixer-strip .node-btn { height: 16px; padding: 0 6px; font-size: 9px; }
+.scene-strip { display: flex; flex-direction: column; gap: 3px; padding-right: 8px; border-right: 1px solid var(--line); max-height: 74px; overflow-y: auto; }
+.scene-btn { height: 15px; padding: 0 7px; font-size: 9px; white-space: nowrap; }
+
+/* ---------- timeline strip (view over the Arranger, PRD §6.6) ---------- */
+.timeline-strip {
+  position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+  z-index: 20; display: flex; gap: 2px; width: min(560px, 60%);
+  height: 26px; padding: 2px; background: rgba(19, 21, 23, 0.92);
+  border: 1px solid var(--line); border-radius: 4px;
+}
+.timeline-block {
+  flex-basis: 0; display: flex; align-items: center; justify-content: space-between;
+  gap: 4px; padding: 0 7px; min-width: 0; overflow: hidden;
+  background: var(--bg-3); border-radius: 2px; font-size: 9.5px; color: var(--muted);
+  white-space: nowrap;
+}
+.timeline-block.is-active { background: #33290f; color: var(--cat-player); box-shadow: inset 0 0 0 1px rgba(255, 194, 75, 0.4); }
+.timeline-loops { color: var(--faint); }
+.timeline-playhead {
+  position: absolute; top: 0; bottom: 0; width: 1.5px;
+  background: #fff; opacity: 0.75; box-shadow: 0 0 6px rgba(255, 255, 255, 0.8); pointer-events: none;
+}

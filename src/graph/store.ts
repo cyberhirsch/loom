@@ -45,9 +45,21 @@ interface LoomStore {
   addModulator: (type: 'lfo' | 'tension') => void;
   resetProject: () => void;
   applyTemplate: (id: TemplateId) => void;
+  /** launcher scenes (PRD §6.7): snapshots of the ensemble, launched quantized to the loop */
+  scenes: Scene[];
+  saveScene: () => void;
+  launchScene: (idx: number) => void;
+  deleteScene: (idx: number) => void;
+  activeScene: number;
 }
 
 export type TemplateId = 'ambient' | 'lofi' | 'techno';
+
+export interface Scene {
+  name: string;
+  players: Record<string, Record<string, unknown>>;
+  conductor: Pick<ConductorState, 'keyIndex' | 'scaleId' | 'tempo' | 'evolveOn' | 'journeyOn'>;
+}
 
 const defaultPlayer = (seed: number) => ({
   seed,
@@ -100,6 +112,7 @@ interface SavedProject {
   nodes: LoomNode[];
   edges: Edge[];
   conductor: ConductorState;
+  scenes?: Scene[];
 }
 
 function loadProject(): SavedProject | null {
@@ -124,8 +137,8 @@ function scheduleSave(get: () => { nodes: LoomNode[]; edges: Edge[]; conductor: 
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     try {
-      const { nodes, edges, conductor } = get();
-      localStorage.setItem(SAVE_KEY, JSON.stringify({ nodes, edges, conductor }));
+      const { nodes, edges, conductor, scenes } = get() as unknown as SavedProject & { scenes: Scene[] };
+      localStorage.setItem(SAVE_KEY, JSON.stringify({ nodes, edges, conductor, scenes }));
     } catch {
       /* storage unavailable — nonfatal */
     }
@@ -206,6 +219,46 @@ export const useLoomStore = create<LoomStore>((set, get) => ({
       ],
     });
   },
+  scenes: saved?.scenes ?? [],
+  activeScene: -1,
+  saveScene: () => {
+    const { nodes, conductor, scenes } = get();
+    const players: Record<string, Record<string, unknown>> = {};
+    for (const n of nodes) {
+      if (['melody', 'chords', 'bass', 'drums', 'arp'].includes(n.type as string)) {
+        players[n.id] = JSON.parse(JSON.stringify(n.data));
+      }
+    }
+    set({
+      scenes: [
+        ...scenes,
+        {
+          name: `scene ${scenes.length + 1}`,
+          players,
+          conductor: {
+            keyIndex: conductor.keyIndex,
+            scaleId: conductor.scaleId,
+            tempo: conductor.tempo,
+            evolveOn: conductor.evolveOn,
+            journeyOn: conductor.journeyOn,
+          },
+        },
+      ],
+      activeScene: scenes.length,
+    });
+  },
+  launchScene: (idx) => {
+    const scene = get().scenes[idx];
+    if (!scene) return;
+    // param changes land at the next loop boundary (engine refresh) — quantized launch
+    set({
+      nodes: get().nodes.map((n) => (scene.players[n.id] ? { ...n, data: { ...n.data, ...scene.players[n.id] } } : n)),
+      activeScene: idx,
+    });
+    get().updateConductor(scene.conductor);
+  },
+  deleteScene: (idx) =>
+    set({ scenes: get().scenes.filter((_, i) => i !== idx), activeScene: -1 }),
   applyTemplate: (id) => {
     const t = TEMPLATES[id];
     if (!t) return;
@@ -294,7 +347,7 @@ const TEMPLATES: Record<TemplateId, Template> = {
 
 // autosave: any change to patch or conductor persists (debounced)
 useLoomStore.subscribe((state, prev) => {
-  if (state.nodes !== prev.nodes || state.edges !== prev.edges || state.conductor !== prev.conductor) {
+  if (state.nodes !== prev.nodes || state.edges !== prev.edges || state.conductor !== prev.conductor || state.scenes !== prev.scenes) {
     scheduleSave(() => useLoomStore.getState());
   }
 });
