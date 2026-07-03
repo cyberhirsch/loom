@@ -21,6 +21,7 @@ import { ScriptPanel } from '../ui/ScriptPanel';
 import { useState } from 'react';
 import type { TemplateId } from '../graph/store';
 import { NOTE_NAMES, SCALES } from '../theory/scales';
+import { forgetFileHandle, openLoomFile, saveLoomFile, supportsFileSystemAccess } from '../io/fileIO';
 
 const nodeTypes = {
   conductor: ConductorNode,
@@ -51,7 +52,28 @@ export function App() {
   const addModulator = useLoomStore((s) => s.addModulator);
   const resetProject = useLoomStore((s) => s.resetProject);
   const applyTemplate = useLoomStore((s) => s.applyTemplate);
+  const scriptText = useLoomStore((s) => s.scriptText);
+  const applyScript = useLoomStore((s) => s.applyScript);
   const [scriptOpen, setScriptOpen] = useState(false);
+  const [fileStatus, setFileStatus] = useState('');
+
+  const flash = (msg: string) => {
+    setFileStatus(msg);
+    setTimeout(() => setFileStatus(''), 2000);
+  };
+
+  const handleSave = async () => {
+    const result = await saveLoomFile(scriptText());
+    if (result === 'saved') flash('saved ✓');
+  };
+
+  const handleLoad = async () => {
+    const picked = await openLoomFile();
+    if (!picked) return;
+    const errors = applyScript(picked.text);
+    if (errors) flash(`${picked.name}: line ${errors[0].line} — ${errors[0].message}`);
+    else flash(`loaded ${picked.name} ✓`);
+  };
 
   const exportMidi = () => {
     const s = useLoomStore.getState();
@@ -79,7 +101,24 @@ export function App() {
         <button className="play-btn" onClick={() => addModulator('tension')} title="Add a Tension (ensemble energy) CV source">+ tension</button>
         <button className="play-btn" onClick={exportMidi} title="Export the current loop (4 repeats) as a Standard MIDI File">↧ midi</button>
         <button className="play-btn" onClick={() => void bounceWav(4)} title="Bounce the current loop (4 repeats) to WAV — offline render through the WASM DSP, faster than real time">↧ wav</button>
-        <button className="play-btn" onClick={resetProject} title="Discard saved project, restore default patch">reset</button>
+        <button
+          className="play-btn"
+          onClick={() => void handleSave()}
+          title={`Save the patch as a .loom file (LoomScript)${supportsFileSystemAccess ? ' — pick where, re-save overwrites it' : ' — downloads (this browser lacks the File System Access API)'}`}
+        >
+          ↧ save
+        </button>
+        <button className="play-btn" onClick={() => void handleLoad()} title="Open a .loom file and load it as the patch">↥ load</button>
+        <button
+          className="play-btn"
+          onClick={() => {
+            forgetFileHandle();
+            resetProject();
+          }}
+          title="Discard saved project, restore default patch"
+        >
+          reset
+        </button>
         <button
           className={`play-btn${scriptOpen ? ' on' : ''}`}
           onClick={() => setScriptOpen(!scriptOpen)}
@@ -102,6 +141,7 @@ export function App() {
           <option value="techno">Techno engine</option>
         </select>
         <div className="top-info">
+          {fileStatus && <span className="file-status">{fileStatus}</span>}
           <span>
             <b>{NOTE_NAMES[conductor.liveKeyIndex]} {SCALES[conductor.liveScaleId].name}</b> · {conductor.tempo} bpm
           </span>

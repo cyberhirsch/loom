@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useLoomStore } from '../graph/store';
 import type { ScriptError } from '../script/loomscript';
+import { openLoomFile, saveLoomFile } from '../io/fileIO';
 
 /** LoomScript panel: the live patch as text (docs/LOOMSCRIPT.md) — view it,
  *  edit it (or let an LLM edit it), apply it back, save/load .loom files. */
@@ -10,7 +11,6 @@ export function ScriptPanel({ onClose }: { onClose: () => void }) {
   const [text, setText] = useState('');
   const [errors, setErrors] = useState<ScriptError[]>([]);
   const [status, setStatus] = useState('');
-  const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setText(scriptText());
@@ -35,23 +35,22 @@ export function ScriptPanel({ onClose }: { onClose: () => void }) {
     setTimeout(() => setStatus(''), 1600);
   };
 
-  const saveFile = () => {
-    const blob = new Blob([text], { type: 'text/plain' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'patch.loom';
-    a.click();
-    URL.revokeObjectURL(a.href);
+  const saveFile = async () => {
+    const result = await saveLoomFile(text);
+    if (result === 'saved') {
+      setStatus('saved ✓');
+      setTimeout(() => setStatus(''), 1600);
+    }
   };
 
-  const loadFile = (file: File) => {
-    void file.text().then((content) => {
-      setText(content);
-      const errs = applyScript(content);
-      setErrors(errs ?? []);
-      setStatus(errs ? '' : `loaded ${file.name} ✓`);
-      if (!errs) setTimeout(() => setStatus(''), 1600);
-    });
+  const loadFile = async () => {
+    const picked = await openLoomFile();
+    if (!picked) return;
+    setText(picked.text);
+    const errs = applyScript(picked.text);
+    setErrors(errs ?? []);
+    setStatus(errs ? '' : `loaded ${picked.name} ✓`);
+    if (!errs) setTimeout(() => setStatus(''), 1600);
   };
 
   return (
@@ -82,19 +81,8 @@ export function ScriptPanel({ onClose }: { onClose: () => void }) {
         <button className="play-btn" onClick={apply} title="Parse the script and replace the patch (takes effect next loop)">apply</button>
         <button className="play-btn" onClick={refresh} title="Re-generate the script from the current patch (discards edits)">refresh</button>
         <button className="play-btn" onClick={() => void navigator.clipboard.writeText(text)} title="Copy the script — paste it to any LLM">copy</button>
-        <button className="play-btn" onClick={saveFile} title="Download as a .loom file">↧ .loom</button>
-        <button className="play-btn" onClick={() => fileRef.current?.click()} title="Load a .loom file and apply it">↥ load</button>
-        <input
-          ref={fileRef}
-          type="file"
-          accept=".loom,.txt"
-          style={{ display: 'none' }}
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) loadFile(f);
-            e.target.value = '';
-          }}
-        />
+        <button className="play-btn" onClick={() => void saveFile()} title="Save as a .loom file">↧ .loom</button>
+        <button className="play-btn" onClick={() => void loadFile()} title="Load a .loom file and apply it">↥ load</button>
       </div>
     </div>
   );

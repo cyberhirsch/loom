@@ -64,6 +64,7 @@ button { color: inherit; }
   border: 1px solid var(--line-light); border-radius: 3px; font-size: 11px; padding: 0 6px; cursor: pointer;
 }
 .top-info b { color: var(--muted); font-weight: 600; }
+.file-status { color: var(--success); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 340px; }
 
 /* ---------- canvas ---------- */
 .graph-canvas { min-height: 0; background: #101113; }
