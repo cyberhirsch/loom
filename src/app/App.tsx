@@ -1,4 +1,4 @@
-import { ReactFlow, Background, Controls, MiniMap, BackgroundVariant } from '@xyflow/react';
+import { ReactFlow, ReactFlowProvider, Background, Controls, MiniMap, BackgroundVariant } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useLoomStore } from '../graph/store';
 import { engine } from '../audio/wasmEngine';
@@ -19,6 +19,8 @@ import { OutNode } from '../ui/nodes/OutNode';
 import { MixerBar } from '../ui/MixerBar';
 import { TimelineStrip } from '../ui/TimelineStrip';
 import { ScriptPanel } from '../ui/ScriptPanel';
+import { AddNodeMenu } from '../ui/AddNodeMenu';
+import { CanvasMenu, type CanvasMenuState } from '../ui/CanvasMenu';
 import { useState } from 'react';
 import type { TemplateId } from '../graph/store';
 import { NOTE_NAMES, SCALES } from '../theory/scales';
@@ -44,6 +46,14 @@ const nodeTypes = {
 };
 
 export function App() {
+  return (
+    <ReactFlowProvider>
+      <Shell />
+    </ReactFlowProvider>
+  );
+}
+
+function Shell() {
   const nodes = useLoomStore((s) => s.nodes);
   const edges = useLoomStore((s) => s.edges);
   const onNodesChange = useLoomStore((s) => s.onNodesChange);
@@ -51,13 +61,13 @@ export function App() {
   const onConnect = useLoomStore((s) => s.onConnect);
   const playing = useLoomStore((s) => s.playing);
   const conductor = useLoomStore((s) => s.conductor);
-  const addModulator = useLoomStore((s) => s.addModulator);
   const resetProject = useLoomStore((s) => s.resetProject);
   const applyTemplate = useLoomStore((s) => s.applyTemplate);
   const scriptText = useLoomStore((s) => s.scriptText);
   const applyScript = useLoomStore((s) => s.applyScript);
   const [scriptOpen, setScriptOpen] = useState(false);
   const [fileStatus, setFileStatus] = useState('');
+  const [canvasMenu, setCanvasMenu] = useState<CanvasMenuState | null>(null);
 
   const flash = (msg: string) => {
     setFileStatus(msg);
@@ -99,9 +109,7 @@ export function App() {
         <button className={`play-btn${playing ? ' on' : ''}`} onClick={() => (playing ? engine.stop() : void engine.start())}>
           {playing ? '■ stop' : '▶ weave'}
         </button>
-        <button className="play-btn" onClick={() => addModulator('lfo')} title="Add an LFO modulator">+ lfo</button>
-        <button className="play-btn" onClick={() => addModulator('tension')} title="Add a Tension (ensemble energy) CV source">+ tension</button>
-        <button className="play-btn" onClick={() => addModulator('motif')} title="Add a Motif node — the melodic idea as a patchable object; wire it into Melody's motif input">+ motif</button>
+        <AddNodeMenu />
         <button className="play-btn" onClick={exportMidi} title="Export the current loop (4 repeats) as a Standard MIDI File">↧ midi</button>
         <button className="play-btn" onClick={() => void bounceWav(4)} title="Bounce the current loop (4 repeats) to WAV — offline render through the WASM DSP, faster than real time">↧ wav</button>
         <button
@@ -155,6 +163,7 @@ export function App() {
         <TimelineStrip />
         <MixerBar />
         {scriptOpen && <ScriptPanel onClose={() => setScriptOpen(false)} />}
+        {canvasMenu && <CanvasMenu menu={canvasMenu} onClose={() => setCanvasMenu(null)} />}
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -162,6 +171,18 @@ export function App() {
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
+          onPaneContextMenu={(e) => {
+            e.preventDefault();
+            setCanvasMenu({ x: (e as MouseEvent).clientX, y: (e as MouseEvent).clientY });
+          }}
+          onNodeContextMenu={(e, node) => {
+            e.preventDefault();
+            setCanvasMenu({ x: e.clientX, y: e.clientY, nodeId: node.id });
+          }}
+          onSelectionContextMenu={(e) => {
+            e.preventDefault();
+            setCanvasMenu({ x: e.clientX, y: e.clientY });
+          }}
           fitView
           minZoom={0.3}
           maxZoom={1.6}

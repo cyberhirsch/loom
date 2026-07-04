@@ -8,9 +8,10 @@ import {
   type EdgeChange,
   type Connection,
 } from '@xyflow/react';
-import type { ConductorState, LoomNode, Pattern } from './types';
+import type { ConductorState, LoomNode, LoomNodeType, Pattern, PlayerKind } from './types';
 import { randomSeed } from '../theory/rng';
-import { parseLoomScript, serializeProject, type LoomProject, type ScriptError } from '../script/loomscript';
+import { DEFAULT_PLAYER, parseLoomScript, serializeProject, type LoomProject, type ScriptError } from '../script/loomscript';
+import { SINGLETON_TYPES } from './catalog';
 
 /** phrase-length choices (steps per loop) — editable on the Conductor */
 export const PHRASE_CHOICES = [8, 16, 32];
@@ -44,7 +45,14 @@ interface LoomStore {
   arrangerSection: number;
   setArrangerSection: (idx: number) => void;
   publishEnergy: (curve: number[]) => void;
-  addModulator: (type: 'lfo' | 'tension' | 'motif') => void;
+  /** create any node from the catalog; singletons no-op if already in the patch */
+  addNode: (type: LoomNodeType, position?: { x: number; y: number }) => void;
+  /** clipboard for copy/cut/paste on the canvas */
+  clipboard: { nodes: LoomNode[]; edges: Edge[] } | null;
+  copySelection: (extraId?: string) => void;
+  cutSelection: (extraId?: string) => void;
+  deleteSelection: (extraId?: string) => void;
+  pasteClipboard: (position?: { x: number; y: number }) => void;
   resetProject: () => void;
   applyTemplate: (id: TemplateId) => void;
   /** launcher scenes (PRD §6.7): snapshots of the ensemble, launched quantized to the loop */
@@ -142,6 +150,42 @@ const saved = typeof localStorage !== 'undefined' ? loadProject() : null;
 
 const defaultConductor: ConductorState = defaultProject.conductor;
 
+/** id for a new node: singletons keep their fixed id, others get type+N */
+function freshId(type: string, taken: (id: string) => boolean): string {
+  if (SINGLETON_TYPES.has(type)) return type;
+  let n = 1;
+  while (taken(`${type}${n}`)) n++;
+  return `${type}${n}`;
+}
+
+/** default data for a freshly created node (players get a fresh seed) */
+function defaultNodeData(type: LoomNodeType, id: string): Record<string, unknown> {
+  switch (type) {
+    case 'conductor': return {};
+    case 'arranger': return { enabled: false, sections: [{ name: 'A', loops: 4, intensity: 1, journeyStop: -1 }] };
+    case 'melody': case 'chords': case 'bass': case 'drums': case 'arp':
+      return { ...DEFAULT_PLAYER[type as PlayerKind], seed: randomSeed() };
+    case 'lfo': return { rate: 0.5, depth: 0.35 };
+    case 'tension': return { depth: 0.4 };
+    case 'motif': return { idea: randomSeed(), shape: 'arch' };
+    case 'synth': return { label: id, wave: 1, attack: 0.005, release: 0.4, cutoff: 4000 };
+    case 'kit': return {};
+    case 'expression': return { portamento: 0.15, glissando: true };
+    case 'delay': return { division: 3, feedback: 0.35, mix: 0.25 };
+    case 'reverb': return { mix: 0.28 };
+    case 'out': return { level: 0 };
+  }
+}
+
+/** the nodes a copy/cut/delete acts on: the selection, or the right-clicked node */
+function grabTargets(nodes: LoomNode[], extraId?: string): LoomNode[] {
+  const sel = nodes.filter((n) => n.selected);
+  if (sel.length) return extraId && !sel.some((n) => n.id === extraId)
+    ? [...sel, ...nodes.filter((n) => n.id === extraId)]
+    : sel;
+  return extraId ? nodes.filter((n) => n.id === extraId) : [];
+}
+
 export const useLoomStore = create<LoomStore>((set, get) => ({
   nodes: saved?.nodes ?? initialNodes,
   edges: saved?.edges ?? initialEdges,
@@ -200,19 +244,73 @@ export const useLoomStore = create<LoomStore>((set, get) => ({
     }
     set({ nodes: initialNodes, edges: initialEdges, conductor: defaultConductor, patterns: {}, effDensity: {} });
   },
-  addModulator: (type) => {
-    const id = `${type}${Date.now().toString(36)}`;
-    const data =
-      type === 'lfo'
-        ? { rate: 0.5, depth: 0.35 }
-        : type === 'motif'
-          ? { idea: randomSeed(), shape: 'arch' }
-          : { depth: 0.4 };
+  addNode: (type, position) => {
+    const nodes = get().nodes;
+    if (SINGLETON_TYPES.has(type) && nodes.some((n) => n.type === type)) return;
+    const id = freshId(type, (candidate) => nodes.some((n) => n.id === candidate));
+    const pos = position ?? { x: 340 + Math.random() * 120, y: 240 + Math.random() * 120 };
     set({
       nodes: [
-        ...get().nodes,
-        { id, type, position: { x: 340 + Math.random() * 120, y: 240 + Math.random() * 120 }, data },
+        ...nodes.map((n) => (n.selected ? { ...n, selected: false } : n)),
+        { id, type, position: pos, data: defaultNodeData(type, id), selected: true },
       ],
+    });
+  },
+  clipboard: null,
+  copySelection: (extraId) => {
+    const { nodes, edges } = get();
+    const targets = grabTargets(nodes, extraId);
+    if (!targets.length) return;
+    const ids = new Set(targets.map((n) => n.id));
+    const innerEdges = edges.filter((e) => ids.has(e.source) && ids.has(e.target));
+    set({ clipboard: JSON.parse(JSON.stringify({ nodes: targets, edges: innerEdges })) });
+  },
+  cutSelection: (extraId) => {
+    get().copySelection(extraId);
+    get().deleteSelection(extraId);
+  },
+  deleteSelection: (extraId) => {
+    const { nodes, edges } = get();
+    const targets = grabTargets(nodes, extraId);
+    if (!targets.length) return;
+    const ids = new Set(targets.map((n) => n.id));
+    set({
+      nodes: nodes.filter((n) => !ids.has(n.id)),
+      edges: edges.filter((e) => !ids.has(e.source) && !ids.has(e.target)),
+    });
+  },
+  pasteClipboard: (position) => {
+    const clip = get().clipboard;
+    if (!clip || !clip.nodes.length) return;
+    const existing = get().nodes;
+    const idMap = new Map<string, string>();
+    const pasted: LoomNode[] = [];
+    // paste lands at the given canvas point (or nudged +48 from the original)
+    const minX = Math.min(...clip.nodes.map((n) => n.position.x));
+    const minY = Math.min(...clip.nodes.map((n) => n.position.y));
+    const dx = position ? position.x - minX : 48;
+    const dy = position ? position.y - minY : 48;
+    for (const n of clip.nodes) {
+      const type = n.type as string;
+      // singleton roles can't be duplicated — pasting one back only works if the slot is free
+      if (SINGLETON_TYPES.has(type) && (existing.some((x) => x.type === type) || pasted.some((x) => x.type === type))) continue;
+      const id = freshId(type, (candidate) => existing.some((x) => x.id === candidate) || pasted.some((x) => x.id === candidate));
+      idMap.set(n.id, id);
+      const clone = JSON.parse(JSON.stringify(n)) as LoomNode;
+      pasted.push({ ...clone, id, selected: true, position: { x: n.position.x + dx, y: n.position.y + dy } });
+    }
+    if (!pasted.length) return;
+    const pastedEdges: Edge[] = [];
+    for (const e of clip.edges) {
+      const source = idMap.get(e.source);
+      const target = idMap.get(e.target);
+      if (!source || !target) continue;
+      const port = e.targetHandle === 'density-in' ? '.density' : e.targetHandle === 'motif-in' ? '.motif' : '';
+      pastedEdges.push({ ...e, id: `${source}→${target}${port}`, source, target });
+    }
+    set({
+      nodes: [...existing.map((n) => (n.selected ? { ...n, selected: false } : n)), ...pasted],
+      edges: [...get().edges, ...pastedEdges],
     });
   },
   scenes: saved?.scenes ?? [],

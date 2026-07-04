@@ -270,7 +270,7 @@ function splitParams(tokens: string[], lineNo: number, errors: ScriptError[]): {
   return { kvs, at };
 }
 
-const DEFAULT_PLAYER: Record<PlayerKind, Record<string, unknown>> = {
+export const DEFAULT_PLAYER: Record<PlayerKind, Record<string, unknown>> = {
   melody: { seed: 101, density: 0.55, adventurousness: 0.35, syncopation: 0.3, register: 0, mute: false, volume: -9 },
   chords: { seed: 202, density: 0.5, adventurousness: 0.35, syncopation: 0.3, register: 0, mute: false, volume: -16 },
   bass: { seed: 303, density: 0.5, adventurousness: 0.35, syncopation: 0.3, register: 0, mute: false, volume: -10 },
