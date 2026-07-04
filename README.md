@@ -19,10 +19,12 @@ Press **▶ weave**. The ensemble is already patched and starts making music in 
 ## What's here
 
 - **Node canvas** (React Flow, Voxelbox visual style — PRD §7.1): dark technical aesthetic, port color = cable type (Signal blue / Note gold), icon tint = category (Player gold / Modulator purple).
-- **Conductor** — ambient "rules of the room" (PRD §5.2): key, scale/mode (8 scales with emotional descriptions), tempo. Hosts the loop behaviors:
+- **Conductor** — ambient "rules of the room" (PRD §5.2): key, scale/mode (8 scales with emotional descriptions), tempo, phrase length (8/16/32 steps). Hosts the loop behaviors:
+  - **Phrase length** — 8 steps for tight 2-bar loops, 16 for standard 4-bar (default), 32 for 8-bar question/answer themes. Affects all players and Motif audition.
   - **✶ Evolve** — coach-guided mutation on every loop boundary (add/move/remove notes, anchors protected).
   - **⇅ Journey** — modulates through related keys every N loops (home → bright fifth → relative minor → warm fourth).
-- **Players** — Melody, Chords, Bass, Drums, Arp. Theory baked in: harmony-first generation against a seeded progression; the Coach's voice-leading rules (stepwise motion, leap recovery, chord-tone pull, question/answer phrases, half & perfect cadences); role-aware drums (kick anchors, snare answers, hats fill).
+- **Players** — Melody, Chords, Bass, Drums, Arp. Theory baked in: harmony-first generation against a seeded progression; the Coach's voice-leading rules (stepwise motion, leap recovery, chord-tone pull, question/answer phrases, half & perfect cadences); role-aware drums (kick anchors, snare answers, hats fill). Melody can be theme-driven (see Motif node below).
+- **✎ Motif node** (PRD §M1 melody quality) — pins the melody's rhythmic character and contour shape. Patch it into **melody.motif** and melodies use a Schoenberg-style sentence grammar (statement/restatement/contrast/cadence) with auditioned takes (every loop the best candidate survives). Shapes: arch (peak early) / rise (climb) / fall (descent) / wave (swell twice). Without a motif, melody is random; with one, it's thematic and memorable.
 - **Seeds** — visible on every player; same seed = same music (verified by test). **↻ re-roll** = new take.
 - **LFO node** — patch its Signal output into any player's **density** input; evaluated at loop boundaries (the modulated value shows live on the player, in blue).
 - **Tension node** — the ensemble's energy curve as a CV source (the music listening to itself, PRD §5.2). Patch cv → density and the loop self-balances: saturated loops breathe out, sparse loops build. Add more modulators from the top bar (**+ lfo**, **+ tension**).
@@ -64,9 +66,10 @@ src/theory/    pure, seeded, deterministic — the crown jewel (PRD M1)
   scales.ts      8 scales/modes, degree→MIDI
   harmony.ts     chord cycles, progressions, journeys
   melody.ts      Coach scoring engine + Evolve
+  motif.ts       Schoenberg sentence grammar + contour shapes + audition critic (PRD §M1)
   parts.ts       bass / chords / arp / drums generators
   energy.ts      ensemble tension curve (CV source)
-  theory.test.ts property tests: determinism, scale-lock, cadences
+  theory.test.ts property tests: determinism, scale-lock, cadences, motif repetition
 src/audio/     wasmEngine.ts — main-thread controller: the "loop brain"
                (journey / evolve / LFO / tension), resolves theory → MIDI,
                talks to the worklet over its port

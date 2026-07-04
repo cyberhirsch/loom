@@ -60,6 +60,20 @@ function ConductorNodeView({ selected }: NodeProps) {
           <span className="val">{conductor.tempo}</span>
         </div>
         <div className="node-row">
+          <label style={{ fontSize: 10, color: 'var(--muted)' }}>phrase</label>
+          <select
+            className="nodrag"
+            value={Number(conductor.steps) || 16}
+            onChange={(e) => update({ steps: Number(e.target.value) })}
+            aria-label="Phrase length in steps"
+            title="Phrase length — 32 gives the melody a real question/answer arc"
+          >
+            <option value={8}>8 steps · half bar</option>
+            <option value={16}>16 steps · one bar</option>
+            <option value={32}>32 steps · question/answer</option>
+          </select>
+        </div>
+        <div className="node-row">
           <button
             className={`node-btn nodrag${conductor.evolveOn ? ' on' : ''}`}
             onClick={() => update({ evolveOn: !conductor.evolveOn })}

@@ -91,6 +91,8 @@ function nodeLine(n: LoomNode): string {
       return `${n.id}: delay time=${DIVISION_NAMES[Number(d.division ?? 3)] ?? '1/8d'} feedback=${round(Number(d.feedback ?? 0.35))} mix=${round(Number(d.mix ?? 0.25))}${pos(n)}`;
     case 'reverb':
       return `${n.id}: reverb mix=${round(Number(d.mix ?? 0.28))}${pos(n)}`;
+    case 'motif':
+      return `${n.id}: motif idea=${Math.round(Number(d.idea ?? 1))} shape=${String(d.shape ?? 'arch')}${pos(n)}`;
     case 'lfo':
       return `${n.id}: lfo rate=${round(Number(d.rate ?? 0.5))} depth=${round(Number(d.depth ?? 0.35))}${pos(n)}`;
     case 'tension':
@@ -101,11 +103,12 @@ function nodeLine(n: LoomNode): string {
 }
 
 /** Which cable family a node emits / accepts (chain inference). */
-const EMITS: Record<string, 'notes' | 'signal' | 'cv' | undefined> = {
+const EMITS: Record<string, 'notes' | 'signal' | 'cv' | 'motif' | undefined> = {
   melody: 'notes', chords: 'notes', bass: 'notes', drums: 'notes', arp: 'notes',
   expression: 'notes',
   synth: 'signal', kit: 'signal', delay: 'signal', reverb: 'signal',
   lfo: 'cv', tension: 'cv',
+  motif: 'motif',
 };
 const ACCEPTS_NOTES = new Set(['expression', 'synth', 'kit']);
 const ACCEPTS_SIGNAL = new Set(['delay', 'reverb', 'out']);
@@ -117,7 +120,7 @@ export function serializeProject(p: { nodes: LoomNode[]; edges: Edge[]; conducto
 
   const conductorNode = nodes.find((n) => n.type === 'conductor');
   lines.push(
-    `conductor key=${NOTE_NAMES[c.keyIndex]} scale=${c.scaleId} tempo=${c.tempo} evolve=${onOff(c.evolveOn)} journey=${onOff(c.journeyOn)} every=${c.modEvery}` +
+    `conductor key=${NOTE_NAMES[c.keyIndex]} scale=${c.scaleId} tempo=${c.tempo} phrase=${c.steps || 16} evolve=${onOff(c.evolveOn)} journey=${onOff(c.journeyOn)} every=${c.modEvery}` +
       (conductorNode ? pos(conductorNode) : ''),
   );
   const arrangerNode = nodes.find((n) => n.type === 'arranger');
@@ -171,6 +174,7 @@ export function serializeProject(p: { nodes: LoomNode[]; edges: Edge[]; conducto
     if (emitted.has(e.id)) continue;
     emitted.add(e.id);
     if (e.targetHandle === 'density-in') lines.push(`${e.source} -> ${e.target}.density`);
+    else if (e.targetHandle === 'motif-in') lines.push(`${e.source} -> ${e.target}.motif`);
     else lines.push(`${e.source} -> ${e.target}`);
   }
 
@@ -280,6 +284,7 @@ const LAYOUT: Record<string, { x: number; y0: number }> = {
   arranger: { x: 40, y0: 560 },
   lfo: { x: 340, y0: 40 },
   tension: { x: 340, y0: 40 },
+  motif: { x: 340, y0: 40 },
   melody: { x: 700, y0: -230 },
   chords: { x: 700, y0: -230 },
   bass: { x: 700, y0: -230 },
@@ -296,7 +301,7 @@ const LAYOUT_GROUP: Record<string, string> = {
   melody: 'players', chords: 'players', bass: 'players', drums: 'players', arp: 'players',
   synth: 'instruments', kit: 'instruments',
   delay: 'fx', reverb: 'fx',
-  lfo: 'mods', tension: 'mods',
+  lfo: 'mods', tension: 'mods', motif: 'mods',
 };
 
 export function parseLoomScript(text: string): ParseResult {
@@ -311,6 +316,7 @@ export function parseLoomScript(text: string): ParseResult {
     keyIndex: 0,
     scaleId: 'minor_pent',
     tempo: 102,
+    steps: 16,
     evolveOn: false,
     journeyOn: false,
     modEvery: 4,
@@ -370,6 +376,11 @@ export function parseLoomScript(text: string): ParseResult {
           const n = parseNum(value);
           if (n === null || n < 30 || n > 260) errors.push({ line: lineNo, message: `tempo must be 30..260, got "${value}"` });
           else conductor.tempo = Math.round(n);
+        } else if (key === 'phrase') {
+          const n = parseNum(value);
+          if (n === null || ![8, 16, 32].includes(Math.round(n)))
+            errors.push({ line: lineNo, message: `phrase must be 8, 16, or 32 steps, got "${value}"` });
+          else conductor.steps = Math.round(n);
         } else if (key === 'evolve' || key === 'journey') {
           const b = parseBool(value);
           if (b === null) errors.push({ line: lineNo, message: `${key} must be on/off, got "${value}"` });
@@ -547,6 +558,7 @@ export function parseLoomScript(text: string): ParseResult {
         reverb: ['mix'],
         lfo: ['rate', 'depth'],
         tension: ['depth'],
+        motif: ['idea', 'shape'],
       };
       if (!(type in known)) {
         errors.push({ line: lineNo, message: `unknown node type "${type ?? ''}" (${Object.keys(known).join(', ')})` });
@@ -576,6 +588,12 @@ export function parseLoomScript(text: string): ParseResult {
       } else if (type === 'reverb') data = { mix: num('mix', 0.28) };
       else if (type === 'lfo') data = { rate: num('rate', 0.5), depth: num('depth', 0.35) };
       else if (type === 'tension') data = { depth: num('depth', 0.4) };
+      else if (type === 'motif') {
+        const shape = (kv('shape') ?? 'arch').toLowerCase();
+        if (!['arch', 'rise', 'fall', 'wave'].includes(shape))
+          errors.push({ line: lineNo, message: `shape must be arch|rise|fall|wave, got "${shape}"` });
+        data = { idea: Math.round(num('idea', 1)), shape: ['arch', 'rise', 'fall', 'wave'].includes(shape) ? shape : 'arch' };
+      }
       addNode(id, type, data, at, lineNo);
       continue;
     }
@@ -611,7 +629,19 @@ export function parseLoomScript(text: string): ParseResult {
         continue;
       }
       let sourceHandle: string, targetHandle: string, className: string;
-      if (family === 'cv' || port === 'density') {
+      if (family === 'motif' || port === 'motif') {
+        if (family !== 'motif') {
+          errors.push({ line: lineNo, message: `only a motif node can feed ${tgtId}.motif` });
+          continue;
+        }
+        if (tgt.type !== 'melody' || (port && port !== 'motif')) {
+          errors.push({ line: lineNo, message: `${srcId} outputs a motif — patch it into the melody: ${srcId} -> melody.motif` });
+          continue;
+        }
+        sourceHandle = 'motif-out';
+        targetHandle = 'motif-in';
+        className = 'edge-motif';
+      } else if (family === 'cv' || port === 'density') {
         if (family !== 'cv') {
           errors.push({ line: lineNo, message: `only lfo/tension can drive ${tgtId}.density` });
           continue;

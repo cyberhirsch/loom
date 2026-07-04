@@ -13,6 +13,7 @@ export type LoomNodeType =
   | PlayerKind
   | 'lfo'
   | 'tension'
+  | 'motif'
   | 'synth'
   | 'kit'
   | 'expression'
@@ -54,6 +55,13 @@ export interface LfoData extends Record<string, unknown> {
   depth: number; // 0..1
 }
 
+/** Motif node (PRD §5.2 expose-on-demand): the melodic IDEA as a patchable
+ *  object — idea seed + contour shape. Unpatched, players invent their own. */
+export interface MotifData extends Record<string, unknown> {
+  idea: number; // seed of the idea (rhythm cell + pitch cell)
+  shape: 'arch' | 'rise' | 'fall' | 'wave';
+}
+
 /** Synth node (Source, PRD §5.2): notes in → signal out. Timbre of one player's voice bank. */
 export interface SynthData extends Record<string, unknown> {
   label: string;
@@ -89,6 +97,8 @@ export interface ConductorState {
   keyIndex: number;
   scaleId: ScaleId;
   tempo: number;
+  /** steps per loop — the phrase length (8 | 16 | 32) */
+  steps: number;
   evolveOn: boolean;
   journeyOn: boolean;
   modEvery: number; // loops between journey moves

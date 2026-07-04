@@ -126,6 +126,13 @@ function PlayerNodeView({ id, type, selected }: NodeProps) {
           <span className="port-symbol" style={{ color: 'var(--cable-note)' }}>△</span>
           <Handle type="source" id="notes-out" position={Position.Right} style={{ background: 'var(--cable-note)' }} />
         </div>
+        {kind === 'melody' && (
+          <div className="node-port node-port--input">
+            <Handle type="target" id="motif-in" position={Position.Left} style={{ background: 'var(--cat-player)' }} />
+            <span className="port-symbol" style={{ color: 'var(--cat-player)' }}>△</span>
+            <span>motif</span>
+          </div>
+        )}
       </div>
     </div>
   );

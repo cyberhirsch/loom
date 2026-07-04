@@ -71,6 +71,7 @@ button { color: inherit; }
 .react-flow__attribution { display: none; }
 .react-flow__edge-path { stroke: var(--cable-signal); stroke-width: 1.6; }
 .react-flow__edge.edge-note .react-flow__edge-path { stroke: var(--cable-note); }
+.react-flow__edge.edge-motif .react-flow__edge-path { stroke: var(--cat-player); stroke-dasharray: 5 4; }
 .react-flow__handle {
   width: 8px; height: 8px; border: 1px solid #0a0b0c; border-radius: 50%;
 }

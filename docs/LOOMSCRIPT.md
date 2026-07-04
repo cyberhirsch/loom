@@ -10,7 +10,7 @@ Paste this spec plus a patch to any LLM and it has everything it needs.
 # Loom — default ensemble (LoomScript v1)
 loom 1
 
-conductor key=C scale=minor_pent tempo=102 evolve=off journey=off every=4
+conductor key=C scale=minor_pent tempo=102 phrase=16 evolve=off journey=off every=4
 arranger off
 section "A · sparse" loops=4 intensity=0.65
 section "B · full" loops=4 intensity=1
@@ -81,10 +81,10 @@ Degrees are scale degrees (0 = tonic; ≥ scale length = next octave). Steps are
 ### Conductor (ambient context — key, scale, tempo, loop behaviors)
 
 ```
-conductor key=C scale=minor_pent tempo=102 evolve=off journey=off every=4
+conductor key=C scale=minor_pent tempo=102 phrase=16 evolve=off journey=off every=4
 ```
 
-`key`: C C# D D# E F F# G G# A A# B · `scale`: `major_pent` `minor_pent` `ionian` (major) `aeolian` (minor) `dorian` `phrygian` `lydian` `mixolydian` · `evolve`: mutate patterns each loop · `journey`: modulate through related keys every `every` loops.
+`key`: C C# D D# E F F# G G# A A# B · `scale`: `major_pent` `minor_pent` `ionian` (major) `aeolian` (minor) `dorian` `phrygian` `lydian` `mixolydian` · `phrase`: phrase length in steps (8 half-bar, 16 one-bar, 32 question/answer) · `evolve`: mutate patterns each loop · `journey`: modulate through related keys every `every` loops.
 
 ### Arranger (generative structure)
 
@@ -96,9 +96,10 @@ section "peak" loops=2 intensity=1.35 journey=1
 
 When `on`, sections cycle: `intensity` multiplies every player's density; `journey=N` (0..3) moves the key to that journey stop (omit = stay home).
 
-### Instruments, Note FX, FX, modulators (declared `id: type params`)
+### Instruments, Note FX, FX, Motifs, and Modulators (declared `id: type params`)
 
 ```
+motif1:  motif idea=924829570 shape=arch
 lead:    synth wave=triangle attack=0.004 release=0.5 cutoff=5200
 kit1:    kit
 expr1:   expression portamento=0.15 glissando=on
@@ -111,6 +112,7 @@ out level=0
 
 | type | params | role |
 |---|---|---|
+| `motif` | `idea` (seed int), `shape` (arch/rise/fall/wave) | Melodic idea (rhythm cell + contour): patch to `melody.motif` to pin a theme's character |
 | `synth` | `wave` (sine/triangle/square/saw), `attack` (s), `release` (s), `cutoff` (Hz) | notes → signal: the instrument |
 | `kit` | — | the drum instrument |
 | `expression` | `portamento` (0..1 → glide time), `glissando` (on/off) | Note FX: sits **in a note path**; portamento glides pitch, glissando inserts scale-locked runs into leaps |
@@ -125,6 +127,7 @@ out level=0
 ```
 melody -> expr1 -> lead -> delay1 -> reverb1 -> out
 lfo1 -> melody.density
+motif1 -> melody.motif
 ```
 
 Arrows chain any number of hops. Cable types are **inferred and checked**:
@@ -132,6 +135,7 @@ Arrows chain any number of hops. Cable types are **inferred and checked**:
 - **Note cables** (players, expression → expression, synth, kit)
 - **Signal cables** (synth, kit, delay, reverb → delay, reverb, out)
 - **CV cables** (lfo, tension → a player's `.density` port)
+- **Motif cables** (motif → melody's `.motif` port — pins the melody's rhythmic and contour character)
 
 Typed mistakes are rejected with guidance, e.g. `melody -> delay1` → *"melody outputs notes — connect it to a synth, kit, or expression"*.
 
@@ -149,6 +153,8 @@ scene "verse" key=C scale=lydian tempo=74 evolve=on journey=off melody.density=0
 - **Slides/ornaments**: put an `expression` between a player and its synth: `melody -> expr1 -> lead`, `expr1: expression portamento=0.3 glissando=on`.
 - **Echo on a part**: route its synth through `delay1` before `reverb1`/`out`.
 - **Breathing dynamics**: `tens1: tension depth=0.4` + `tens1 -> melody.density`.
+- **A memorable melody**: `motif1: motif idea=508247 shape=rise` + `motif1 -> melody.motif` (pins the rhythmic cell and contour; melody stays thematic but evolves).
+- **Longer song structures**: `phrase=32` in conductor for 8-bar question/answer themes (vs. 16 = 4-bar, 8 = 2-bar).
 - **A song arc**: `arranger on` + 3–4 `section` lines with rising then falling `intensity`, a `journey=1` on the peak.
 - **New take of one part**: change only that player's `seed`.
 - **Same music every time**: don't touch seeds; everything is deterministic.

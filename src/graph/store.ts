@@ -12,7 +12,8 @@ import type { ConductorState, LoomNode, Pattern } from './types';
 import { randomSeed } from '../theory/rng';
 import { parseLoomScript, serializeProject, type LoomProject, type ScriptError } from '../script/loomscript';
 
-export const STEPS = 16;
+/** phrase-length choices (steps per loop) — editable on the Conductor */
+export const PHRASE_CHOICES = [8, 16, 32];
 
 interface LoomStore {
   nodes: LoomNode[];
@@ -43,7 +44,7 @@ interface LoomStore {
   arrangerSection: number;
   setArrangerSection: (idx: number) => void;
   publishEnergy: (curve: number[]) => void;
-  addModulator: (type: 'lfo' | 'tension') => void;
+  addModulator: (type: 'lfo' | 'tension' | 'motif') => void;
   resetProject: () => void;
   applyTemplate: (id: TemplateId) => void;
   /** launcher scenes (PRD §6.7): snapshots of the ensemble, launched quantized to the loop */
@@ -70,7 +71,7 @@ export interface Scene {
 export const DEFAULT_SCRIPT = `# Loom — default ensemble (LoomScript v1)
 loom 1
 
-conductor key=C scale=minor_pent tempo=102 evolve=off journey=off every=4 @ 40,140
+conductor key=C scale=minor_pent tempo=102 phrase=16 evolve=off journey=off every=4 @ 40,140
 arranger off @ 40,560
 section "A · sparse" loops=4 intensity=0.65
 section "B · full" loops=4 intensity=1
@@ -154,14 +155,16 @@ export const useLoomStore = create<LoomStore>((set, get) => ({
   onNodesChange: (changes) => set({ nodes: applyNodeChanges(changes, get().nodes) }),
   onEdgesChange: (changes) => set({ edges: applyEdgeChanges(changes, get().edges) }),
   onConnect: (connection) => {
-    // typed cables (PRD §5.1): CV → density, Note → note-in, Signal → signal-in
+    // typed cables (PRD §5.1): CV → density, Note → note-in, Signal → signal-in, Motif → motif-in
     const { sourceHandle, targetHandle } = connection;
     const ok =
       (sourceHandle === 'cv-out' && targetHandle === 'density-in') ||
       (sourceHandle === 'notes-out' && targetHandle === 'notes-in') ||
-      (sourceHandle === 'signal-out' && targetHandle === 'signal-in');
+      (sourceHandle === 'signal-out' && targetHandle === 'signal-in') ||
+      (sourceHandle === 'motif-out' && targetHandle === 'motif-in');
     if (!ok) return;
-    const className = sourceHandle === 'notes-out' ? 'edge-note' : 'edge-signal';
+    const className =
+      sourceHandle === 'notes-out' ? 'edge-note' : sourceHandle === 'motif-out' ? 'edge-motif' : 'edge-signal';
     set({ edges: addEdge({ ...connection, className }, get().edges) });
   },
   updateNodeData: (id, patch) =>
@@ -199,7 +202,12 @@ export const useLoomStore = create<LoomStore>((set, get) => ({
   },
   addModulator: (type) => {
     const id = `${type}${Date.now().toString(36)}`;
-    const data = type === 'lfo' ? { rate: 0.5, depth: 0.35 } : { depth: 0.4 };
+    const data =
+      type === 'lfo'
+        ? { rate: 0.5, depth: 0.35 }
+        : type === 'motif'
+          ? { idea: randomSeed(), shape: 'arch' }
+          : { depth: 0.4 };
     set({
       nodes: [
         ...get().nodes,

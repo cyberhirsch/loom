@@ -38,8 +38,9 @@ function fifthDegree(scaleLen: number, intervals: number[]): number {
   return intervals.indexOf(7);
 }
 
-/** Score all candidate degrees for a step, given the previous two notes. */
-function scoreCandidates(
+/** Score all candidate degrees for a step, given the previous two notes.
+ *  Exported for the theme grammar (motif.ts), which uses it inside motif slots. */
+export function scoreCandidates(
   ctx: HarmonicContext,
   step: number,
   last: number | null,

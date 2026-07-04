@@ -11,6 +11,7 @@ import { ArrangerNode } from '../ui/nodes/ArrangerNode';
 import { PlayerNode } from '../ui/nodes/PlayerNode';
 import { LfoNode } from '../ui/nodes/LfoNode';
 import { TensionNode } from '../ui/nodes/TensionNode';
+import { MotifNode } from '../ui/nodes/MotifNode';
 import { SynthNode } from '../ui/nodes/SynthNode';
 import { ExpressionNode } from '../ui/nodes/ExpressionNode';
 import { FxNode } from '../ui/nodes/FxNode';
@@ -33,6 +34,7 @@ const nodeTypes = {
   arp: PlayerNode,
   lfo: LfoNode,
   tension: TensionNode,
+  motif: MotifNode,
   synth: SynthNode,
   kit: SynthNode,
   expression: ExpressionNode,
@@ -99,6 +101,7 @@ export function App() {
         </button>
         <button className="play-btn" onClick={() => addModulator('lfo')} title="Add an LFO modulator">+ lfo</button>
         <button className="play-btn" onClick={() => addModulator('tension')} title="Add a Tension (ensemble energy) CV source">+ tension</button>
+        <button className="play-btn" onClick={() => addModulator('motif')} title="Add a Motif node — the melodic idea as a patchable object; wire it into Melody's motif input">+ motif</button>
         <button className="play-btn" onClick={exportMidi} title="Export the current loop (4 repeats) as a Standard MIDI File">↧ midi</button>
         <button className="play-btn" onClick={() => void bounceWav(4)} title="Bounce the current loop (4 repeats) to WAV — offline render through the WASM DSP, faster than real time">↧ wav</button>
         <button

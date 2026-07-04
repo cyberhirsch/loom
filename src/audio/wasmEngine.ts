@@ -5,8 +5,8 @@
  * MIDI notes posted to the worklet, which owns the sample clock.
  */
 
-import { useLoomStore, STEPS, densityModulations } from '../graph/store';
-import { computeContext, computeBasePattern, ROLE_OCTAVE } from '../graph/session';
+import { useLoomStore, densityModulations } from '../graph/store';
+import { computeContext, computeBasePattern, motifForPlayer, ROLE_OCTAVE } from '../graph/session';
 import { degreeToMidi } from '../theory/scales';
 import { chordMidi, buildJourney, type HarmonicContext } from '../theory/harmony';
 import { evolveMelody, type NoteEvent } from '../theory/melody';
@@ -152,6 +152,7 @@ class WasmEngine {
 
     const store = useLoomStore.getState();
     this.post({ type: 'tempo', bpm: store.conductor.tempo });
+    this.post({ type: 'steps', value: Number(store.conductor.steps) || 16 });
     this.syncMix();
     this.syncRouting(true);
     this.refreshLoop(true);
@@ -188,6 +189,9 @@ class WasmEngine {
     this.unsubscribe = useLoomStore.subscribe((state, prev) => {
       if (state.conductor.tempo !== prev.conductor.tempo) {
         this.post({ type: 'tempo', bpm: state.conductor.tempo });
+      }
+      if (state.conductor.steps !== prev.conductor.steps) {
+        this.post({ type: 'steps', value: Number(state.conductor.steps) || 16 });
       }
       if (state.nodes !== prev.nodes) this.syncMix(prev.nodes);
       if (state.nodes !== prev.nodes || state.edges !== prev.edges) this.syncRouting(false);
@@ -357,15 +361,21 @@ class WasmEngine {
         continue;
       }
 
-      const signature = JSON.stringify([kind, data.seed, effDensity, data.adventurousness, data.syncopation, data.register, ctx.keyIndex, ctx.scaleId, ctx.chordAtStep]);
+      const motif = kind === 'melody' ? motifForPlayer(fresh.nodes, edges, node.id) : null;
+      const signature = JSON.stringify([kind, data.seed, effDensity, data.adventurousness, data.syncopation, data.register, ctx.keyIndex, ctx.scaleId, ctx.chordAtStep, motif]);
       const changed = signature !== this.signatures.get(node.id);
 
       if (fresh.conductor.evolveOn && !changed && this.patterns.has(node.id) && (kind === 'melody' || kind === 'arp' || kind === 'bass')) {
-        const evolved = evolveMelody(ctx, this.patterns.get(node.id) as NoteEvent[], Number(data.seed), ++this.evolveGeneration);
+        // melody develops thematically (theme grammar variation depth);
+        // arp/bass keep the coach-guided single-note mutation
+        const evolved =
+          kind === 'melody'
+            ? (computeBasePattern(kind, ctx, data, { densityOverride: effDensity, motif, generation: ++this.evolveGeneration }) as NoteEvent[])
+            : evolveMelody(ctx, this.patterns.get(node.id) as NoteEvent[], Number(data.seed), ++this.evolveGeneration);
         this.patterns.set(node.id, evolved);
         fresh.publishPattern(node.id, evolved);
       } else if (changed || force || !this.patterns.has(node.id)) {
-        const pattern = computeBasePattern(kind, ctx, data, effDensity);
+        const pattern = computeBasePattern(kind, ctx, data, { densityOverride: effDensity, motif });
         this.patterns.set(node.id, pattern);
         this.signatures.set(node.id, signature);
         fresh.publishPattern(node.id, pattern);

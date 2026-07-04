@@ -3,7 +3,7 @@
  * Rust/WASM DSP core in an OfflineAudioContext — faster than real time.
  */
 
-import { useLoomStore, STEPS } from '../graph/store';
+import { useLoomStore } from '../graph/store';
 import { computeContext, computeBasePattern, ROLE_OCTAVE } from '../graph/session';
 import { degreeToMidi } from '../theory/scales';
 import { chordMidi } from '../theory/harmony';
@@ -50,7 +50,8 @@ export async function bounceWav(loops = 4): Promise<{ rms: number; seconds: numb
   const s = useLoomStore.getState();
   const tempo = s.conductor.tempo;
   const sr = 48000;
-  const loopSeconds = (STEPS * 60) / (tempo * 4);
+  const steps = Number(s.conductor.steps) || 16;
+  const loopSeconds = (steps * 60) / (tempo * 4);
   const seconds = loops * loopSeconds + 1.5; // reverb/release tail
   const offctx = new OfflineAudioContext(2, Math.ceil(seconds * sr), sr);
 
@@ -67,6 +68,7 @@ export async function bounceWav(loops = 4): Promise<{ rms: number; seconds: numb
   });
 
   node.port.postMessage({ type: 'tempo', bpm: tempo });
+  node.port.postMessage({ type: 'steps', value: steps });
   for (const n of s.nodes) {
     if (!PLAYER_KINDS.includes(n.type as PlayerKind)) continue;
     node.port.postMessage({ type: 'gain', kind: n.type, value: dbToLinear(Number(n.data.volume)) * 0.4 });

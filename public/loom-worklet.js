@@ -20,6 +20,7 @@ class LoomProcessor extends AudioWorkletProcessor {
     this.loop = 0;
     this.patterns = null; // { kind: [{step, midis[], vel, lenSteps}] } + drums [{step,lane,vel}]
     this.pending = null;
+    this.pendingSteps = null;
     this.delayCfg = { division: 3, feedback: 0.35, mix: 0.25 }; // division in steps (3 = dotted 8th)
     this.port.onmessage = (e) => this.onMessage(e.data);
   }
@@ -42,6 +43,11 @@ class LoomProcessor extends AudioWorkletProcessor {
       case 'tempo':
         this.tempo = msg.bpm;
         this.syncDelay();
+        break;
+      case 'steps':
+        // phrase length (8/16/32) — applied at the next loop boundary while playing
+        if (this.playing) this.pendingSteps = msg.value;
+        else this.steps = msg.value;
         break;
       case 'gain':
         if (this.wasm) this.wasm.set_gain(KIND_INDEX[msg.kind], msg.value);
@@ -128,6 +134,11 @@ class LoomProcessor extends AudioWorkletProcessor {
       if (stepNow !== this.step) {
         this.step = stepNow;
         if (stepNow === 0) {
+          if (this.pendingSteps) {
+            this.steps = this.pendingSteps;
+            this.pendingSteps = null;
+            this.sampleCursor = 0;
+          }
           if (this.pending) {
             this.patterns = this.pending;
             this.pending = null;

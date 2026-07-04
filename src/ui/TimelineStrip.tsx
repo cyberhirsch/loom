@@ -1,4 +1,4 @@
-import { useLoomStore, STEPS } from '../graph/store';
+import { useLoomStore } from '../graph/store';
 import type { ArrangerData } from '../graph/types';
 
 /**
@@ -12,6 +12,7 @@ export function TimelineStrip() {
   const loopCount = useLoomStore((s) => s.loopCount);
   const currentStep = useLoomStore((s) => s.currentStep);
   const playing = useLoomStore((s) => s.playing);
+  const steps = useLoomStore((s) => Number(s.conductor.steps) || 16);
 
   const enabled = Boolean(arranger?.enabled) && Array.isArray(arranger?.sections) && arranger!.sections.length > 0;
   const sections = enabled ? arranger!.sections : [{ name: 'loop', loops: 1, intensity: 1, journeyStop: -1 }];
@@ -23,7 +24,7 @@ export function TimelineStrip() {
   let audibleSection = activeSection;
   if (playing && loopCount > 0) {
     const loopInCycle = (loopCount - 1) % total;
-    pos = (loopInCycle + Math.max(0, currentStep) / STEPS) / total;
+    pos = (loopInCycle + Math.max(0, currentStep) / steps) / total;
     let acc = 0;
     for (let i = 0; i < sections.length; i++) {
       acc += Math.max(1, sections[i].loops);
