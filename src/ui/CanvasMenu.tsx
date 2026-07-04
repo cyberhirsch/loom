@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useReactFlow } from '@xyflow/react';
 import { useLoomStore } from '../graph/store';
 import { NODE_CATALOG } from '../graph/catalog';
@@ -9,8 +9,8 @@ export interface CanvasMenuState {
   nodeId?: string; // set when a node (not the pane) was right-clicked
 }
 
-/** Canvas right-click menu: the full node catalog plus copy / cut / paste
- *  (and delete when invoked on a node or a selection). */
+/** Canvas right-click menu: one flyout submenu per node category, plus
+ *  copy / cut / paste / delete acting on the clicked node or the selection. */
 export function CanvasMenu({ menu, onClose }: { menu: CanvasMenuState; onClose: () => void }) {
   const { screenToFlowPosition } = useReactFlow();
   const nodes = useLoomStore((s) => s.nodes);
@@ -20,6 +20,7 @@ export function CanvasMenu({ menu, onClose }: { menu: CanvasMenuState; onClose: 
   const deleteSelection = useLoomStore((s) => s.deleteSelection);
   const pasteClipboard = useLoomStore((s) => s.pasteClipboard);
   const hasClipboard = useLoomStore((s) => Boolean(s.clipboard?.nodes.length));
+  const [openCat, setOpenCat] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
   const hasTarget = Boolean(menu.nodeId) || nodes.some((n) => n.selected);
@@ -43,37 +44,52 @@ export function CanvasMenu({ menu, onClose }: { menu: CanvasMenuState; onClose: 
     onClose();
   };
 
-  // keep the panel on screen
+  // keep the panel (and its flyouts) on screen
   const style = {
     left: Math.min(menu.x, window.innerWidth - 230),
-    top: Math.min(menu.y, window.innerHeight - 420),
+    top: Math.min(menu.y, window.innerHeight - 280),
   };
+  const flyLeft = style.left + 420 > window.innerWidth;
 
   return (
     <div className="ctx-menu" style={style} ref={ref} onContextMenu={(e) => e.preventDefault()}>
-      <div className="ctx-menu__scroll">
-        {NODE_CATALOG.map((cat) => (
-          <div key={cat.id}>
-            <div className="menu-cat">{cat.label}</div>
-            {cat.items.map((item) => {
-              const inPatch = Boolean(item.singleton) && nodes.some((n) => n.type === item.type);
-              return (
-                <button
-                  key={item.type}
-                  className="menu-item"
-                  disabled={inPatch}
-                  title={item.hint}
-                  onClick={() => run(() => addNode(item.type, flowPoint()))}
-                >
-                  <span className={`menu-icon menu-icon--${cat.id}`}>{item.icon}</span>
-                  {item.label}
-                  {inPatch && <span className="menu-note">in patch</span>}
-                </button>
-              );
-            })}
-          </div>
-        ))}
-      </div>
+      {NODE_CATALOG.map((cat) => (
+        <div
+          key={cat.id}
+          className="menu-cat-row"
+          onMouseEnter={() => setOpenCat(cat.id)}
+          onMouseLeave={() => setOpenCat(null)}
+        >
+          <button
+            className={`menu-item${openCat === cat.id ? ' is-open' : ''}`}
+            onClick={() => setOpenCat(openCat === cat.id ? null : cat.id)}
+          >
+            <span className={`menu-icon menu-icon--${cat.id}`}>▪</span>
+            add {cat.label}
+            <span className="menu-caret-r">▸</span>
+          </button>
+          {openCat === cat.id && (
+            <div className={`menu-sub${flyLeft ? ' menu-sub--left' : ''}`}>
+              {cat.items.map((item) => {
+                const inPatch = Boolean(item.singleton) && nodes.some((n) => n.type === item.type);
+                return (
+                  <button
+                    key={item.type}
+                    className="menu-item"
+                    disabled={inPatch}
+                    title={item.hint}
+                    onClick={() => run(() => addNode(item.type, flowPoint()))}
+                  >
+                    <span className={`menu-icon menu-icon--${cat.id}`}>{item.icon}</span>
+                    {item.label}
+                    {inPatch && <span className="menu-note">in patch</span>}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      ))}
       <div className="menu-sep" />
       <button className="menu-item" disabled={!hasTarget} onClick={() => run(() => copySelection(menu.nodeId))}>
         copy
