@@ -4,7 +4,7 @@
  * The same WASM core will later be hosted natively by the Tauri sidecar.
  */
 
-const KIND_INDEX = { melody: 0, chords: 1, bass: 2, arp: 3, drums: 4 };
+const KIND_INDEX = { melody: 0, chords: 1, bass: 2, arp: 3, drums: 4, live: 5 };
 
 class LoomProcessor extends AudioWorkletProcessor {
   constructor() {
@@ -82,6 +82,17 @@ class LoomProcessor extends AudioWorkletProcessor {
         break;
       case 'stop':
         this.playing = false;
+        break;
+      // live MIDI/MPE input (MIDI Input node) — immediate, outside the step clock,
+      // and independent of the transport (render always runs)
+      case 'liveOn':
+        if (this.wasm) this.wasm.live_note_on(msg.id, msg.midi, msg.vel, msg.pan ?? 0);
+        break;
+      case 'liveOff':
+        if (this.wasm) this.wasm.live_note_off(msg.id);
+        break;
+      case 'liveUpd':
+        if (this.wasm) this.wasm.live_note_update(msg.id, msg.midi, msg.pressure, msg.timbre);
         break;
     }
   }

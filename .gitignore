@@ -3,3 +3,5 @@ dist
 *.local
 loom-dsp/target
 src-tauri/target
+
+_info/

@@ -30,6 +30,7 @@ export const NODE_CATALOG: CatalogCategory[] = [
       { type: 'bass', label: 'Bass', icon: '𝄢', hint: 'root-driven low end', singleton: true },
       { type: 'drums', label: 'Drums', icon: '▦', hint: 'kick anchors, snare answers, hats fill', singleton: true },
       { type: 'arp', label: 'Arp', icon: '≋', hint: 'ornamental arpeggios over the current chord', singleton: true },
+      { type: 'midiin', label: 'MIDI In', icon: '⌨', hint: 'play live — a MIDI/MPE controller into the note flow (Chrome/Edge)', singleton: true },
     ],
   },
   {

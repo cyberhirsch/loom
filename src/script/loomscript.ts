@@ -105,7 +105,7 @@ function nodeLine(n: LoomNode): string {
 /** Which cable family a node emits / accepts (chain inference). */
 const EMITS: Record<string, 'notes' | 'signal' | 'cv' | 'motif' | undefined> = {
   melody: 'notes', chords: 'notes', bass: 'notes', drums: 'notes', arp: 'notes',
-  expression: 'notes',
+  expression: 'notes', midiin: 'notes',
   synth: 'signal', kit: 'signal', delay: 'signal', reverb: 'signal',
   lfo: 'cv', tension: 'cv',
   motif: 'motif',
@@ -142,11 +142,20 @@ export function serializeProject(p: { nodes: LoomNode[]; edges: Edge[]; conducto
     const take = takeLine(n);
     if (take) lines.push(take);
   }
+  // live MIDI input (singleton, bare like out)
+  const midiNode = nodes.find((n) => n.type === 'midiin');
+  if (midiNode) {
+    const d = midiNode.data;
+    const dev = String(d.device ?? '');
+    lines.push(
+      `midiin${dev ? ` device="${dev}"` : ''} mode=${d.mode === 'midi' ? 'midi' : 'mpe'} bend=${Math.round(Number(d.bend) || 48)}${pos(midiNode)}`,
+    );
+  }
   lines.push('');
 
   // instruments, note fx, fx, modulators
   for (const n of nodes) {
-    if (['conductor', 'arranger', 'out', ...PLAYER_KINDS].includes(n.type as string)) continue;
+    if (['conductor', 'arranger', 'out', 'midiin', ...PLAYER_KINDS].includes(n.type as string)) continue;
     lines.push(nodeLine(n));
   }
   const outNode = nodes.find((n) => n.type === 'out');
@@ -233,12 +242,16 @@ function parseDivision(raw: string): number | null {
   return n !== null && n >= 1 && n <= 8 ? Math.round(n) : null;
 }
 
-/** split a line into tokens, keeping "quoted strings" intact */
+/** split a line into tokens, keeping "quoted strings" and key="quoted values" intact */
 function tokenize(line: string): string[] {
   const tokens: string[] = [];
-  const re = /"([^"]*)"|(\S+)/g;
+  const re = /(\S+?="[^"]*")|"([^"]*)"|(\S+)/g;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(line))) tokens.push(m[1] !== undefined ? `"${m[1]}"` : m[2]);
+  while ((m = re.exec(line))) {
+    if (m[1] !== undefined) tokens.push(m[1]);
+    else if (m[2] !== undefined) tokens.push(`"${m[2]}"`);
+    else tokens.push(m[3]);
+  }
   return tokens;
 }
 
@@ -290,6 +303,7 @@ const LAYOUT: Record<string, { x: number; y0: number }> = {
   bass: { x: 700, y0: -230 },
   drums: { x: 700, y0: -230 },
   arp: { x: 700, y0: -230 },
+  midiin: { x: 700, y0: 1020 },
   expression: { x: 990, y0: 60 },
   synth: { x: 1250, y0: -230 },
   kit: { x: 1250, y0: -230 },
@@ -439,6 +453,24 @@ export function parseLoomScript(text: string): ParseResult {
         else errors.push({ line: lineNo, message: `out has no param "${key}" (level)` });
       }
       addNode('out', 'out', data, at, lineNo);
+      continue;
+    }
+
+    if (head === 'midiin') {
+      const { kvs, at } = splitParams(tokens.slice(1), lineNo, errors);
+      const data: Record<string, unknown> = { device: '', mode: 'mpe', bend: 48 };
+      for (const { key, value } of kvs) {
+        if (key === 'device') data.device = value;
+        else if (key === 'mode') {
+          if (value !== 'mpe' && value !== 'midi') errors.push({ line: lineNo, message: `mode must be mpe or midi, got "${value}"` });
+          else data.mode = value;
+        } else if (key === 'bend') {
+          const n = parseNum(value);
+          if (n === null || n < 1 || n > 96) errors.push({ line: lineNo, message: `bend must be 1..96 semitones` });
+          else data.bend = Math.round(n);
+        } else errors.push({ line: lineNo, message: `midiin has no param "${key}" (device, mode, bend)` });
+      }
+      addNode('midiin', 'midiin', data, at, lineNo);
       continue;
     }
 

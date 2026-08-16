@@ -134,6 +134,26 @@ melody -> delay1
     if (!bad3.ok) expect(bad3.errors[0].message).toContain('no param "speed"');
   });
 
+  it('midiin round-trips: device with spaces, mode, bend, and its note chain', () => {
+    const p1 = parseOrThrow(`
+midiin device="Seaboard RISE 2" mode=mpe bend=48
+lead: synth wave=triangle
+midiin -> lead -> out
+`);
+    const midi = p1.nodes.find((n) => n.type === 'midiin')!;
+    expect(midi.data).toEqual({ device: 'Seaboard RISE 2', mode: 'mpe', bend: 48 });
+    const chain = p1.edges.find((e) => e.source === 'midiin')!;
+    expect(chain.sourceHandle).toBe('notes-out');
+    expect(chain.target).toBe('lead');
+    const p2 = parseOrThrow(serializeProject(p1));
+    expect(p2.nodes.find((n) => n.type === 'midiin')!.data).toEqual(midi.data);
+    expect(p2.edges.some((e) => e.source === 'midiin' && e.target === 'lead')).toBe(true);
+    // typed cable law still holds: midiin emits notes, not signal
+    const bad = parseLoomScript(`midiin\nmidiin -> out`);
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.errors[0].message).toContain('outputs notes');
+  });
+
   it('arranger sections and journey stops survive the trip', () => {
     const p1 = parseOrThrow(`
 arranger on

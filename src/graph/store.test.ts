@@ -26,7 +26,7 @@ describe('addNode (catalog factory)', () => {
   });
 
   it('every created node survives a LoomScript round-trip', () => {
-    for (const type of ['synth', 'kit', 'expression', 'delay', 'reverb', 'lfo', 'tension', 'motif'] as const) {
+    for (const type of ['synth', 'kit', 'expression', 'delay', 'reverb', 'lfo', 'tension', 'motif', 'midiin'] as const) {
       s().addNode(type, { x: 50, y: 50 });
     }
     const text = serializeProject(s());

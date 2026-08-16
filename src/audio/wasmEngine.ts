@@ -125,7 +125,10 @@ class WasmEngine {
   private routes = new Map<PlayerKind, Route>();
   private routingSig = '';
 
-  async start() {
+  /** Bring up the audio stack without starting the transport — the live MIDI
+   *  path plays through a stopped transport (render always runs). Must be
+   *  called from a user gesture the first time (browser autoplay policy). */
+  async ensureAudio() {
     if (!this.ctx) {
       this.ctx = new AudioContext();
       await this.ctx.audioWorklet.addModule(new URL('loom-worklet.js', document.baseURI).href);
@@ -147,8 +150,14 @@ class WasmEngine {
       });
       this.node.port.onmessage = (e) => this.onMessage(e.data);
       this.subscribeStore();
+      this.syncMix();
+      this.syncRouting(true);
     }
     await this.ctx.resume();
+  }
+
+  async start() {
+    await this.ensureAudio();
 
     const store = useLoomStore.getState();
     this.post({ type: 'tempo', bpm: store.conductor.tempo });
@@ -158,6 +167,31 @@ class WasmEngine {
     this.refreshLoop(true);
     this.post({ type: 'start' });
     store.setPlaying(true);
+  }
+
+  // ---- live MIDI/MPE input (MIDI Input node) -------------------------------
+  // Immediate, unquantized, independent of the transport. `id` is the MPE
+  // member channel (0..15) or the note number in plain-MIDI mode.
+
+  liveNoteOn(id: number, midi: number, vel: number) {
+    this.post({ type: 'liveOn', id, midi, vel });
+  }
+
+  liveNoteOff(id: number) {
+    this.post({ type: 'liveOff', id });
+  }
+
+  liveNoteUpdate(id: number, midi: number, pressure: number, timbre: number) {
+    this.post({ type: 'liveUpd', id, midi, pressure, timbre });
+  }
+
+  /** panic/cleanup: release every live id (device unplugged, node deleted) */
+  liveAllNotesOff() {
+    for (let id = 0; id < 128; id++) this.post({ type: 'liveOff', id });
+  }
+
+  get audioReady(): boolean {
+    return this.ctx !== null && this.ctx.state === 'running';
   }
 
   stop() {
@@ -221,6 +255,11 @@ class WasmEngine {
       next.set(kind, route);
       parts.push([kind, node.data.mute, route]);
     }
+    // MIDI Input node: same law as players — its live notes only sound if its
+    // cable chain reaches a synth whose signal reaches Out
+    const midiNode = nodes.find((n) => n.type === 'midiin');
+    const liveRoute = midiNode ? traceRoute(midiNode.id, nodes, edges) : null;
+    parts.push(liveRoute);
     const delayNode = nodes.find((n) => n.type === 'delay');
     const reverbNode = nodes.find((n) => n.type === 'reverb');
     const outNode = nodes.find((n) => n.type === 'out');
@@ -229,6 +268,18 @@ class WasmEngine {
     if (!force && sig === this.routingSig) return;
     this.routingSig = sig;
     this.routes = next;
+
+    if (liveRoute) {
+      const audible = liveRoute.toOut && liveRoute.synth !== null;
+      this.post({ type: 'mute', kind: 'live', value: !audible });
+      if (liveRoute.synth) {
+        const s = liveRoute.synth;
+        this.post({ type: 'voice', kind: 'live', wave: Number(s.wave), attack: Number(s.attack), release: Number(s.release), cutoff: Number(s.cutoff) });
+      }
+      this.post({ type: 'sends', kind: 'live', rev: liveRoute.hasReverb ? 0.3 : 0, del: liveRoute.hasDelay ? 0.25 : 0 });
+    } else {
+      this.post({ type: 'mute', kind: 'live', value: true });
+    }
 
     for (const [kind, route] of next) {
       const audible = route.toOut && (route.synth !== null || route.isKit);

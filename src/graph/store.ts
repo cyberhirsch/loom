@@ -168,6 +168,7 @@ function defaultNodeData(type: LoomNodeType, id: string): Record<string, unknown
     case 'lfo': return { rate: 0.5, depth: 0.35 };
     case 'tension': return { depth: 0.4 };
     case 'motif': return { idea: randomSeed(), shape: 'arch' };
+    case 'midiin': return { device: '', mode: 'mpe', bend: 48 };
     case 'synth': return { label: id, wave: 1, attack: 0.005, release: 0.4, cutoff: 4000 };
     case 'kit': return {};
     case 'expression': return { portamento: 0.15, glissando: true };

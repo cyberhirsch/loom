@@ -12,6 +12,8 @@ import { PlayerNode } from '../ui/nodes/PlayerNode';
 import { LfoNode } from '../ui/nodes/LfoNode';
 import { TensionNode } from '../ui/nodes/TensionNode';
 import { MotifNode } from '../ui/nodes/MotifNode';
+import { MidiInNode } from '../ui/nodes/MidiInNode';
+import '../midi/midiInput'; // live MIDI manager (store subscription + DEV hooks)
 import { SynthNode } from '../ui/nodes/SynthNode';
 import { ExpressionNode } from '../ui/nodes/ExpressionNode';
 import { FxNode } from '../ui/nodes/FxNode';
@@ -37,6 +39,7 @@ const nodeTypes = {
   lfo: LfoNode,
   tension: TensionNode,
   motif: MotifNode,
+  midiin: MidiInNode,
   synth: SynthNode,
   kit: SynthNode,
   expression: ExpressionNode,

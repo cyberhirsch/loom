@@ -14,7 +14,11 @@ const K_CHORDS: u32 = 1;
 const K_BASS: u32 = 2;
 const K_ARP: u32 = 3;
 const K_DRUMS: u32 = 4;
-const NUM_KINDS: usize = 5;
+/// live MIDI/MPE input bank (MIDI Input node) — held voices, no step clock
+const K_LIVE: u32 = 5;
+const NUM_KINDS: usize = 6;
+/// live-note id space: MPE uses the member channel (0..15), plain MIDI the note number (0..127)
+const MAX_LIVE_IDS: usize = 128;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Stage {
@@ -41,6 +45,8 @@ const fn params_for(kind: u32) -> VoiceParams {
         K_MELODY => VoiceParams { attack: 0.004, decay: 0.32, sustain: 0.06, release: 0.5, cutoff: 5200.0, wave: 1, send: 0.35 },
         K_CHORDS => VoiceParams { attack: 0.10, decay: 0.40, sustain: 0.55, release: 1.3, cutoff: 3400.0, wave: 0, send: 0.45 },
         K_BASS => VoiceParams { attack: 0.008, decay: 0.30, sustain: 0.30, release: 0.30, cutoff: 900.0, wave: 2, send: 0.06 },
+        // live input holds notes — real sustain so a held key keeps sounding
+        K_LIVE => VoiceParams { attack: 0.004, decay: 0.25, sustain: 0.55, release: 0.4, cutoff: 5200.0, wave: 1, send: 0.3 },
         _ => VoiceParams { attack: 0.002, decay: 0.14, sustain: 0.02, release: 0.25, cutoff: 6500.0, wave: 1, send: 0.40 },
     }
 }
@@ -75,14 +81,17 @@ struct Voice {
     glide_coef: f32, // per-sample freq multiplier; 1.0 = no glide
     level: f32,
     vel: f32,
-    remaining: i64, // samples until release
+    remaining: i64, // samples until release (i64::MAX = held live note)
     lp: f32,
     pan: f32,
+    // per-note expression (MPE): pressure scales amplitude, timbre scales cutoff
+    press: f32,
+    cutoff_mul: f32,
 }
 
 impl Voice {
     const fn new() -> Self {
-        Voice { stage: Stage::Off, kind: 0, phase: 0.0, freq: 440.0, freq_target: 440.0, glide_coef: 1.0, level: 0.0, vel: 1.0, remaining: 0, lp: 0.0, pan: 0.0 }
+        Voice { stage: Stage::Off, kind: 0, phase: 0.0, freq: 440.0, freq_target: 440.0, glide_coef: 1.0, level: 0.0, vel: 1.0, remaining: 0, lp: 0.0, pan: 0.0, press: 1.0, cutoff_mul: 1.0 }
     }
 }
 
@@ -148,6 +157,8 @@ struct Engine {
     delay: Delay,
     noise: u32,
     rr: usize, // round-robin voice cursor
+    /// live-note id (MPE member channel or MIDI note) → voice slot, -1 = none
+    live_map: [i32; MAX_LIVE_IDS],
 }
 
 static mut OUT_L: [f32; BLOCK] = [0.0; BLOCK];
@@ -186,17 +197,18 @@ impl Engine {
                 hp_coef: 0.75,
                 lp: 0.0, lp_coef: 0.9,
             },
-            gains: [0.35, 0.16, 0.32, 0.2, 0.4],
+            gains: [0.35, 0.16, 0.32, 0.2, 0.4, 0.35],
             mutes: [false; NUM_KINDS],
-            voice_params: [params_for(0), params_for(1), params_for(2), params_for(3), params_for(4)],
+            voice_params: [params_for(0), params_for(1), params_for(2), params_for(3), params_for(4), params_for(5)],
             rev_sends: [
                 params_for(0).send,
                 params_for(1).send,
                 params_for(2).send,
                 params_for(3).send,
                 params_for(4).send,
+                params_for(5).send,
             ],
-            delay_sends: [delay_send(0), delay_send(1), delay_send(2), delay_send(3), delay_send(4)],
+            delay_sends: [delay_send(0), delay_send(1), delay_send(2), delay_send(3), delay_send(4), delay_send(5)],
             glide_samples: [0.0; NUM_KINDS],
             last_midi: [0.0; NUM_KINDS],
             reverb_out: 0.28,
@@ -215,6 +227,7 @@ impl Engine {
             },
             noise: 0x2545_f491,
             rr: 0,
+            live_map: [-1; MAX_LIVE_IDS],
         }
     }
 
@@ -269,7 +282,94 @@ impl Engine {
             remaining: dur_samples as i64,
             lp: 0.0,
             pan,
+            press: 1.0,
+            cutoff_mul: 1.0,
         };
+    }
+
+    /// Live MIDI/MPE note-on: a held voice in the live bank with no fixed
+    /// duration — it sounds until live_note_off. `id` is the MPE member
+    /// channel (0..15) or, in plain-MIDI mode, the note number (0..127).
+    fn live_note_on(&mut self, id: usize, midi: f32, vel: f32, pan: f32) {
+        // retrigger on the same id replaces its note
+        if self.live_map[id] >= 0 {
+            let old = self.live_map[id] as usize;
+            if self.voices[old].kind == K_LIVE {
+                self.voices[old].stage = Stage::Release;
+            }
+        }
+        let mut slot = 0;
+        let mut best = f32::MAX;
+        for (i, v) in self.voices.iter().enumerate() {
+            let i2 = (i + self.rr) % MAX_VOICES;
+            if self.voices[i2].stage == Stage::Off {
+                slot = i2;
+                best = -1.0;
+                break;
+            }
+            if v.level < best {
+                best = v.level;
+                slot = i;
+            }
+        }
+        self.rr = (self.rr + 1) % MAX_VOICES;
+        // a stolen slot may still be mapped from another live id — unmap it
+        for m in self.live_map.iter_mut() {
+            if *m == slot as i32 {
+                *m = -1;
+            }
+        }
+        let freq = 440.0 * f32::powf(2.0, (midi - 69.0) / 12.0);
+        self.voices[slot] = Voice {
+            stage: Stage::Attack,
+            kind: K_LIVE,
+            phase: 0.0,
+            freq,
+            freq_target: freq,
+            glide_coef: 1.0,
+            level: 0.0,
+            vel,
+            remaining: i64::MAX, // held
+            lp: 0.0,
+            pan,
+            press: 1.0,
+            cutoff_mul: 1.0,
+        };
+        self.live_map[id] = slot as i32;
+    }
+
+    fn live_note_off(&mut self, id: usize) {
+        let slot = self.live_map[id];
+        if slot >= 0 {
+            let v = &mut self.voices[slot as usize];
+            if v.kind == K_LIVE && v.stage != Stage::Off {
+                v.stage = Stage::Release;
+            }
+            self.live_map[id] = -1;
+        }
+    }
+
+    /// Per-note expression on a held live note: absolute pitch (note + bend,
+    /// glided over ~5ms against zipper), pressure→amplitude, timbre→cutoff.
+    fn live_note_update(&mut self, id: usize, midi: f32, pressure: f32, timbre: f32) {
+        let slot = self.live_map[id];
+        if slot < 0 {
+            return;
+        }
+        let v = &mut self.voices[slot as usize];
+        if v.kind != K_LIVE || v.stage == Stage::Off {
+            return;
+        }
+        let target = 440.0 * f32::powf(2.0, (midi - 69.0) / 12.0);
+        if (target - v.freq).abs() > 0.01 {
+            let gs = (self.sr * 0.005).max(1.0);
+            v.freq_target = target;
+            v.glide_coef = f32::powf(target / v.freq, 1.0 / gs);
+        }
+        // pressure: neutral 1.0 at rest, up to ~1.5× when leaned into
+        v.press = 0.75 + pressure.clamp(0.0, 1.0) * 0.75;
+        // timbre: 0.5..2× cutoff, centered at CC74 = 64
+        v.cutoff_mul = f32::powf(2.0, (timbre.clamp(0.0, 1.0) - 0.5) * 2.0);
     }
 
     fn drum(&mut self, lane: u32, vel: f32) {
@@ -357,10 +457,10 @@ impl Engine {
                         2 => if v.phase < 0.5 { 0.9 } else { -0.9 },
                         _ => 2.0 * v.phase - 1.0,
                     };
-                    // one-pole lowpass
-                    let a = (p.cutoff * inv_sr * core::f32::consts::TAU).min(0.99);
+                    // one-pole lowpass (timbre/CC74 scales cutoff per note)
+                    let a = (p.cutoff * v.cutoff_mul * inv_sr * core::f32::consts::TAU).min(0.99);
                     v.lp += a * (raw - v.lp);
-                    let s = v.lp * v.level * v.vel;
+                    let s = v.lp * v.level * v.vel * v.press;
                     let g = if self.mutes[v.kind as usize] { 0.0 } else { self.gains[v.kind as usize] };
                     let l = s * g * (1.0 - v.pan * 0.5);
                     let r = s * g * (1.0 + v.pan * 0.5);
@@ -514,6 +614,44 @@ pub extern "C" fn note_on(kind: u32, midi: f32, vel: f32, dur_samples: u32, pan:
     unsafe {
         if let Some(e) = ENGINE.as_mut() {
             e.note_on(kind, midi, vel.clamp(0.0, 1.5), dur_samples, pan.clamp(-1.0, 1.0));
+        }
+    }
+}
+
+/// Live MIDI/MPE input (MIDI Input node): held note-on outside the step clock.
+#[no_mangle]
+pub extern "C" fn live_note_on(id: u32, midi: f32, vel: f32, pan: f32) {
+    if !midi.is_finite() || !vel.is_finite() || !pan.is_finite() || id as usize >= MAX_LIVE_IDS {
+        return;
+    }
+    unsafe {
+        if let Some(e) = ENGINE.as_mut() {
+            e.live_note_on(id as usize, midi, vel.clamp(0.0, 1.5), pan.clamp(-1.0, 1.0));
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn live_note_off(id: u32) {
+    if id as usize >= MAX_LIVE_IDS {
+        return;
+    }
+    unsafe {
+        if let Some(e) = ENGINE.as_mut() {
+            e.live_note_off(id as usize);
+        }
+    }
+}
+
+/// Per-note expression on a held live note (MPE X/Y/Z).
+#[no_mangle]
+pub extern "C" fn live_note_update(id: u32, midi: f32, pressure: f32, timbre: f32) {
+    if !midi.is_finite() || !pressure.is_finite() || !timbre.is_finite() || id as usize >= MAX_LIVE_IDS {
+        return;
+    }
+    unsafe {
+        if let Some(e) = ENGINE.as_mut() {
+            e.live_note_update(id as usize, midi, pressure, timbre);
         }
     }
 }

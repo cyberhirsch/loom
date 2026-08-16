@@ -14,12 +14,24 @@ export type LoomNodeType =
   | 'lfo'
   | 'tension'
   | 'motif'
+  | 'midiin'
   | 'synth'
   | 'kit'
   | 'expression'
   | 'delay'
   | 'reverb'
   | 'out';
+
+/** MIDI Input node (PRD §6.9): live MIDI/MPE from a hardware controller into
+ *  the graph's Note flow — web transport is the Web MIDI API. */
+export interface MidiInData extends Record<string, unknown> {
+  /** input id or name; '' = all devices */
+  device: string;
+  /** 'mpe' = per-note channels (Seaboard etc.); 'midi' = plain keyboard */
+  mode: 'mpe' | 'midi';
+  /** pitch-bend range in semitones (MPE default 48) */
+  bend: number;
+}
 
 /** Arranger (PRD §5.2): generative structure — a sequencer of sections. */
 export interface ArrangerSection {
