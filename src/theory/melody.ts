@@ -5,9 +5,26 @@
  * perfect cadence on the root. Seeded and deterministic.
  */
 
-import { SCALES, isChordTone } from './scales';
+import { SCALES, degreeToMidi, isChordTone, type ScaleId } from './scales';
 import type { HarmonicContext } from './harmony';
 import { mulberry32, pickWeighted, type Rng } from './rng';
+
+/** Semitones above the tonic (key-independent): interval logic is measured in
+ *  semitones, since a scale degree is 2–3 st in pentatonic but 1–2 st in 7-note scales. */
+export function degreeSemis(scaleId: ScaleId, degree: number): number {
+  return degreeToMidi(0, scaleId, degree) - 60;
+}
+
+export function isTritone(scaleId: ScaleId, a: number, b: number): boolean {
+  return Math.abs(degreeSemis(scaleId, b) - degreeSemis(scaleId, a)) % 12 === 6;
+}
+
+/** c moves back inside the a→b leap by a step (1–2 semitones): the counterpoint resolution of a tritone. */
+export function resolvesInward(scaleId: ScaleId, a: number, b: number, c: number): boolean {
+  const leap = degreeSemis(scaleId, b) - degreeSemis(scaleId, a);
+  const move = degreeSemis(scaleId, c) - degreeSemis(scaleId, b);
+  return Math.sign(move) === -Math.sign(leap) && Math.abs(move) >= 1 && Math.abs(move) <= 2;
+}
 
 export interface NoteEvent {
   step: number;
@@ -55,20 +72,25 @@ export function scoreCandidates(
   const role = phraseRole(step, ctx.steps);
   const fifth = fifthDegree(scaleLen, intervals);
   const chordDeg = ctx.chordAtStep[step];
-  const leap = last != null && prev != null && Math.abs(last - prev) >= 3;
+  const st = (d: number) => degreeSemis(ctx.scaleId, d);
+  // a leap of a 5th or more wants recovery the other way
+  const leap = last != null && prev != null && Math.abs(st(last) - st(prev)) >= 7;
   const leapDir = leap ? Math.sign(last! - prev!) : 0;
+  const tritoneIn = last != null && prev != null && isTritone(ctx.scaleId, prev, last);
 
   const out: Array<[number, number]> = [];
   for (let d = 0; d < range; d++) {
     let score = 1;
     const chordTone = isChordTone(d, chordDeg, scaleLen);
     if (last != null) {
-      const dist = Math.abs(d - last);
-      if (dist === 1) score += 40;
-      else if (dist === 2) score += 26;
-      else if (dist === 0) score += 14;
-      else score += 7 + adventurousness * 14; // wide leaps get likelier when adventurous
-      if (leap && Math.sign(d - last) === -leapDir && dist >= 1 && dist <= 2) score += 30; // leap recovery
+      const dist = Math.abs(st(d) - st(last));
+      if (dist === 0) score += 14;
+      else if (dist <= 2) score += 40; // step
+      else if (dist < 5) score += 26; // skip of a third
+      else score += 7 + adventurousness * 14; // leaps (P4 and up) get likelier when adventurous
+      if (dist % 12 === 6) score -= 40;
+      if (leap && Math.sign(d - last) === -leapDir && dist >= 1 && dist <= 2) score += 30; // leap recovery by step
+      if (tritoneIn && resolvesInward(ctx.scaleId, prev!, last, d)) score += 30;
     }
     if (chordTone) score += 22;
     else score += adventurousness * 16; // tension notes when adventurous
@@ -79,7 +101,7 @@ export function scoreCandidates(
       else if (chordTone) score += 20;
     }
     if (role === 'abody' && step >= ctx.steps - 4 && d % scaleLen === 0) score += 26; // head home
-    out.push([d, score]);
+    out.push([d, Math.max(1, score)]);
   }
   return out;
 }
@@ -166,4 +188,27 @@ export function evolveMelody(
     }
   }
   return next;
+}
+
+/** Scale-locked glissando (Expression node, PRD §5.2): before a leap of a 4th
+ *  or more, insert quiet grace notes running the scale into the target.
+ *  Degrees stay in-scale by construction — the run can never go chromatic. */
+export function withGlissando(events: NoteEvent[], scaleId: ScaleId): NoteEvent[] {
+  const occupied = new Set(events.map((e) => e.step));
+  const graces: NoteEvent[] = [];
+  for (let i = 1; i < events.length; i++) {
+    const prev = events[i - 1];
+    const cur = events[i];
+    const diff = cur.degree - prev.degree;
+    if (Math.abs(degreeSemis(scaleId, cur.degree) - degreeSemis(scaleId, prev.degree)) < 5) continue;
+    const dir = Math.sign(diff);
+    // only degrees strictly inside the leap: a 4th in pentatonic is 2 degrees, so g = 2 would re-strike the origin
+    for (let g = 1; g <= Math.min(2, Math.abs(diff) - 1); g++) {
+      const step = cur.step - g;
+      if (step <= prev.step || occupied.has(step)) continue;
+      occupied.add(step);
+      graces.push({ step, degree: cur.degree - dir * g, velocity: cur.velocity * 0.5, lengthSteps: 1 });
+    }
+  }
+  return graces.length ? [...events, ...graces].sort((a, b) => a.step - b.step) : events;
 }

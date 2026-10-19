@@ -9,7 +9,7 @@ import { useLoomStore, densityModulations } from '../graph/store';
 import { computeContext, computeBasePattern, kickStepsOf, motifForPlayer, ROLE_OCTAVE } from '../graph/session';
 import { degreeToMidi } from '../theory/scales';
 import { chordMidi, buildJourney, type HarmonicContext } from '../theory/harmony';
-import { evolveMelody, type NoteEvent } from '../theory/melody';
+import { evolveMelody, withGlissando, type NoteEvent } from '../theory/melody';
 import { computeEnergyCurve, energyScalar } from '../theory/energy';
 import type { DrumEvent } from '../theory/parts';
 import type { ArrangerData, DelayData, ExpressionData, OutData, PlayerData, PlayerKind, ReverbData, SynthData } from '../graph/types';
@@ -96,28 +96,6 @@ function voiceMessage(kind: PlayerKind | 'live', s: SynthData) {
     type: 'voice', kind, wave: Number(s.wave), attack: Number(s.attack), decay: opt(s.decay), sustain: opt(s.sustain),
     release: Number(s.release), cutoff: Number(s.cutoff),
   };
-}
-
-/** Scale-locked glissando (Expression node, PRD §5.2): before a leap of 3+
- *  scale degrees, insert quiet grace notes running the scale into the target.
- *  Degrees stay in-scale by construction — the run can never go chromatic. */
-function withGlissando(events: NoteEvent[]): NoteEvent[] {
-  const occupied = new Set(events.map((e) => e.step));
-  const graces: NoteEvent[] = [];
-  for (let i = 1; i < events.length; i++) {
-    const prev = events[i - 1];
-    const cur = events[i];
-    const diff = cur.degree - prev.degree;
-    if (Math.abs(diff) < 3) continue;
-    const dir = Math.sign(diff);
-    for (let g = 1; g <= 2; g++) {
-      const step = cur.step - g;
-      if (step <= prev.step || occupied.has(step)) continue;
-      occupied.add(step);
-      graces.push({ step, degree: cur.degree - dir * g, velocity: cur.velocity * 0.5, lengthSteps: 1 });
-    }
-  }
-  return graces.length ? [...events, ...graces].sort((a, b) => a.step - b.step) : events;
 }
 
 class WasmEngine {
@@ -462,7 +440,7 @@ class WasmEngine {
         const octave = ROLE_OCTAVE[kind] + Number(node.data.register ?? 0);
         let events = [...(pattern as NoteEvent[])].sort((a, b) => a.step - b.step);
         if (route?.expression?.glissando && kind !== 'chords') {
-          events = withGlissando(events);
+          events = withGlissando(events, ctx.scaleId);
         }
         out[kind] = events.map((ev) => ({
           step: ev.step,
