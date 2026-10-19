@@ -25,9 +25,9 @@ drums  seed=404 density=0.6 syncopate=0.3 volume=-8
 lfo1:    lfo rate=0.5 depth=0.35
 expr1:   expression portamento=0.15 glissando=on
 pluck:   synth wave=triangle attack=0.002 release=0.25 cutoff=6500
-lead:    synth wave=triangle attack=0.004 release=0.5 cutoff=5200
-pad:     synth wave=sine attack=0.1 release=1.3 cutoff=3400
-sub:     synth wave=square attack=0.008 release=0.3 cutoff=900
+lead:    synth wave=triangle attack=0.004 decay=0.25 sustain=0.45 release=0.12 cutoff=5200
+pad:     synth wave=sine attack=0.1 release=0.45 cutoff=3400
+sub:     synth wave=square attack=0.004 decay=0.2 sustain=0.5 release=0.06 cutoff=900
 kit1:    kit
 delay1:  delay time=1/8d feedback=0.35 mix=0.25
 reverb1: reverb mix=0.28
@@ -100,7 +100,7 @@ When `on`, sections cycle: `intensity` multiplies every player's density; `journ
 
 ```
 motif1:  motif idea=924829570 shape=arch
-lead:    synth wave=triangle attack=0.004 release=0.5 cutoff=5200
+lead:    synth wave=triangle attack=0.004 decay=0.25 sustain=0.45 release=0.12 cutoff=5200
 kit1:    kit
 expr1:   expression portamento=0.15 glissando=on
 delay1:  delay time=1/8d feedback=0.35 mix=0.25
@@ -113,7 +113,7 @@ out level=0
 | type | params | role |
 |---|---|---|
 | `motif` | `idea` (seed int), `shape` (arch/rise/fall/wave) | Melodic idea (rhythm cell + contour): patch to `melody.motif` to pin a theme's character |
-| `synth` | `wave` (sine/triangle/square/saw), `attack` (s), `release` (s), `cutoff` (Hz) | notes → signal: the instrument |
+| `synth` | `wave` (sine/triangle/square/saw), `attack` (s), `decay` (s, optional), `sustain` (0..1, optional), `release` (s, fade to -60 dB from the current level), `cutoff` (Hz) | notes → signal: the instrument. Omitted `decay`/`sustain` use the engine default for the part it plays. Melody and bass voices are monophonic (a new note takes over the voice; with portamento it glides) |
 | `kit` | — | the drum instrument |
 | `expression` | `portamento` (0..1 → glide time), `glissando` (on/off) | Note FX: sits **in a note path**; portamento glides pitch, glissando inserts scale-locked runs into leaps |
 | `delay` | `time` (`1/8`, `1/8d`, `1/4`), `feedback`, `mix` | tempo-synced ping-pong echo |

@@ -56,7 +56,7 @@ class LoomProcessor extends AudioWorkletProcessor {
         if (this.wasm) this.wasm.set_mute(KIND_INDEX[msg.kind], msg.value ? 1 : 0);
         break;
       case 'voice':
-        if (this.wasm) this.wasm.set_voice(KIND_INDEX[msg.kind], msg.wave, msg.attack, msg.release, msg.cutoff);
+        if (this.wasm) this.wasm.set_voice(KIND_INDEX[msg.kind], msg.wave, msg.attack, msg.decay ?? -1, msg.sustain ?? -1, msg.release, msg.cutoff);
         break;
       case 'sends':
         if (this.wasm) this.wasm.set_sends(KIND_INDEX[msg.kind], msg.rev, msg.del);
@@ -120,6 +120,8 @@ class LoomProcessor extends AudioWorkletProcessor {
       if (!events) continue;
       for (const ev of events) {
         if (ev.step !== step) continue;
+        // the previous pad chord gives way within half of the new chord's length
+        if (kind === 'chords') this.wasm.choke_kind(KIND_INDEX.chords, ((0.5 * ev.lenSteps * sps) / sampleRate) * 1000);
         for (let i = 0; i < ev.midis.length; i++) {
           const pan = ev.midis.length > 1 ? (i / (ev.midis.length - 1) - 0.5) * 0.6 : 0;
           this.wasm.note_on(KIND_INDEX[kind], ev.midis[i], ev.vel, Math.floor(ev.lenSteps * sps * 0.95), pan);

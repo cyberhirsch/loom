@@ -110,6 +110,31 @@ lead: synth attack=4ms cutoff=5.2k
     expect(lead.data.cutoff).toBe(5200);
   });
 
+  it('synth decay/sustain are optional: old lines stay byte-identical, new keys round-trip', () => {
+    const oldLine = 'pad: synth wave=sine attack=0.1 release=1.3 cutoff=3400 @ 1250,270';
+    const pOld = parseOrThrow(oldLine);
+    const pad = pOld.nodes.find((n) => n.type === 'synth')!;
+    expect('decay' in pad.data).toBe(false);
+    expect('sustain' in pad.data).toBe(false);
+    expect(serializeProject(pOld).split('\n')).toContain(oldLine);
+
+    const newLine = 'lead: synth wave=triangle attack=0.004 decay=0.25 sustain=0.45 release=0.12 cutoff=5200 @ 1250,20';
+    const pNew = parseOrThrow(newLine);
+    const lead = pNew.nodes.find((n) => n.type === 'synth')!;
+    expect(lead.data).toMatchObject({ attack: 0.004, decay: 0.25, sustain: 0.45, release: 0.12 });
+    const text = serializeProject(pNew);
+    expect(text.split('\n')).toContain(newLine);
+    expect(parseOrThrow(text).nodes.find((n) => n.type === 'synth')!.data).toEqual(lead.data);
+
+    // one key without the other, in any order, with units
+    const pHalf = parseOrThrow('sub: synth release=60ms sustain=0.5 @ 0,0');
+    const sub = pHalf.nodes.find((n) => n.type === 'synth')!;
+    expect(sub.data.sustain).toBe(0.5);
+    expect(sub.data.release).toBeCloseTo(0.06);
+    expect('decay' in sub.data).toBe(false);
+    expect(parseOrThrow(serializeProject(pHalf)).nodes.find((n) => n.type === 'synth')!.data).toEqual(sub.data);
+  });
+
   it('reports typed-cable mistakes with line numbers and guidance', () => {
     const r = parseLoomScript(`melody seed=1
 delay1: delay

@@ -84,7 +84,12 @@ function nodeLine(n: LoomNode): string {
     case 'expression':
       return `${n.id}: expression portamento=${round(Number(d.portamento ?? 0))} glissando=${onOff(d.glissando)}${pos(n)}`;
     case 'synth':
-      return `${n.id}: synth wave=${WAVES[Number(d.wave ?? 0)] ?? 'sine'} attack=${round(Number(d.attack ?? 0.005))} release=${round(Number(d.release ?? 0.4))} cutoff=${round(Number(d.cutoff ?? 4000))}${pos(n)}`;
+      return (
+        `${n.id}: synth wave=${WAVES[Number(d.wave ?? 0)] ?? 'sine'} attack=${round(Number(d.attack ?? 0.005))}` +
+        (d.decay !== undefined ? ` decay=${round(Number(d.decay))}` : '') +
+        (d.sustain !== undefined ? ` sustain=${round(Number(d.sustain))}` : '') +
+        ` release=${round(Number(d.release ?? 0.4))} cutoff=${round(Number(d.cutoff ?? 4000))}${pos(n)}`
+      );
     case 'kit':
       return `${n.id}: kit${pos(n)}`;
     case 'delay':
@@ -584,7 +589,7 @@ export function parseLoomScript(text: string): ParseResult {
       };
       const known: Record<string, string[]> = {
         expression: ['portamento', 'glissando'],
-        synth: ['wave', 'attack', 'release', 'cutoff'],
+        synth: ['wave', 'attack', 'decay', 'sustain', 'release', 'cutoff'],
         kit: [],
         delay: ['time', 'feedback', 'mix'],
         reverb: ['mix'],
@@ -612,6 +617,9 @@ export function parseLoomScript(text: string): ParseResult {
           }
         }
         data = { label: id, wave, attack: num('attack', 0.005), release: num('release', 0.4), cutoff: num('cutoff', 4000) };
+        // optional: absent keys stay absent so the DSP's per-kind default applies (and old scripts round-trip)
+        if (kv('decay') !== undefined) data.decay = num('decay', 0.3);
+        if (kv('sustain') !== undefined) data.sustain = num('sustain', 0.5);
       } else if (type === 'kit') data = {};
       else if (type === 'delay') {
         const div = parseDivision(kv('time') ?? '1/8d');

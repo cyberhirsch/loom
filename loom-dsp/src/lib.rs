@@ -19,6 +19,17 @@ const K_LIVE: u32 = 5;
 const NUM_KINDS: usize = 6;
 /// live-note id space: MPE uses the member channel (0..15), plain MIDI the note number (0..127)
 const MAX_LIVE_IDS: usize = 128;
+/// a monophonic kind's previous note fades out over this when a new note takes the voice
+const MONO_HANDOFF_SECS: f32 = 0.008;
+/// exponential release reaches -60 dB (×0.001 = e^-6.9) in the release time
+const RELEASE_LN: f32 = 6.9;
+/// below -80 dB a releasing voice is freed
+const OFF_LEVEL: f32 = 1.0e-4;
+
+/// lead and bass lines are monophonic (last-note priority), like a mono synth
+const fn is_mono(kind: u32) -> bool {
+    kind == K_MELODY || kind == K_BASS
+}
 
 #[derive(Clone, Copy, PartialEq)]
 enum Stage {
@@ -82,6 +93,8 @@ struct Voice {
     level: f32,
     vel: f32,
     remaining: i64, // samples until release (i64::MAX = held live note)
+    /// per-sample release multiplier, set when the voice enters Release
+    rel_coef: f32,
     lp: f32,
     pan: f32,
     // per-note expression (MPE): pressure scales amplitude, timbre scales cutoff
@@ -91,8 +104,33 @@ struct Voice {
 
 impl Voice {
     const fn new() -> Self {
-        Voice { stage: Stage::Off, kind: 0, phase: 0.0, freq: 440.0, freq_target: 440.0, glide_coef: 1.0, level: 0.0, vel: 1.0, remaining: 0, lp: 0.0, pan: 0.0, press: 1.0, cutoff_mul: 1.0 }
+        Voice { stage: Stage::Off, kind: 0, phase: 0.0, freq: 440.0, freq_target: 440.0, glide_coef: 1.0, level: 0.0, vel: 1.0, remaining: 0, rel_coef: 0.0, lp: 0.0, pan: 0.0, press: 1.0, cutoff_mul: 1.0 }
     }
+
+    /// Enter (or speed up) the release: from the CURRENT level, reaching
+    /// -60 dB after `secs`. A voice already releasing faster keeps its rate.
+    fn release(&mut self, secs: f32, sr: f32) {
+        let coef = (-RELEASE_LN / (secs.max(0.001) * sr)).exp();
+        if self.stage == Stage::Release {
+            self.rel_coef = self.rel_coef.min(coef);
+        } else if self.stage != Stage::Off {
+            self.stage = Stage::Release;
+            self.rel_coef = coef;
+        }
+    }
+
+    /// Restart the envelope from the current level, keeping oscillator phase
+    /// (no click, no stacked same-pitch voice).
+    fn retrigger(&mut self, vel: f32, dur_samples: u32, pan: f32) {
+        self.stage = Stage::Attack;
+        self.vel = vel;
+        self.remaining = dur_samples as i64;
+        self.pan = pan;
+    }
+}
+
+fn midi_to_hz(midi: f32) -> f32 {
+    440.0 * f32::powf(2.0, (midi - 69.0) / 12.0)
 }
 
 struct Kick {
@@ -159,6 +197,8 @@ struct Engine {
     rr: usize, // round-robin voice cursor
     /// live-note id (MPE member channel or MIDI note) → voice slot, -1 = none
     live_map: [i32; MAX_LIVE_IDS],
+    /// the voice currently owned by a monophonic kind, -1 = none
+    mono_slot: [i32; NUM_KINDS],
 }
 
 static mut OUT_L: [f32; BLOCK] = [0.0; BLOCK];
@@ -228,6 +268,7 @@ impl Engine {
             noise: 0x2545_f491,
             rr: 0,
             live_map: [-1; MAX_LIVE_IDS],
+            mono_slot: [-1; NUM_KINDS],
         }
     }
 
@@ -241,15 +282,14 @@ impl Engine {
         (x as f32 / u32::MAX as f32) * 2.0 - 1.0
     }
 
-    fn note_on(&mut self, kind: u32, midi: f32, vel: f32, dur_samples: u32, pan: f32) {
-        // steal: first Off, else quietest
+    /// steal: first Off, else quietest
+    fn alloc_slot(&mut self) -> usize {
         let mut slot = 0;
         let mut best = f32::MAX;
         for (i, v) in self.voices.iter().enumerate() {
             let i2 = (i + self.rr) % MAX_VOICES;
             if self.voices[i2].stage == Stage::Off {
                 slot = i2;
-                best = -1.0;
                 break;
             }
             if v.level < best {
@@ -258,28 +298,78 @@ impl Engine {
             }
         }
         self.rr = (self.rr + 1) % MAX_VOICES;
-        let target = 440.0 * f32::powf(2.0, (midi - 69.0) / 12.0);
+        slot
+    }
+
+    fn note_on(&mut self, kind: u32, midi: f32, vel: f32, dur_samples: u32, pan: f32) {
+        let target = midi_to_hz(midi);
+        let same_pitch = |v: &Voice| v.kind == kind && v.stage != Stage::Off && (v.freq_target - target).abs() < target * 1.0e-4;
+        let gs = self.glide_samples[kind as usize];
+
+        if is_mono(kind) {
+            let cur = self.mono_slot[kind as usize];
+            let cur = if cur >= 0 && self.voices[cur as usize].kind == kind && self.voices[cur as usize].stage != Stage::Off {
+                Some(cur as usize)
+            } else {
+                None
+            };
+            // the line keeps one voice: a repeat of the sounding pitch, or a
+            // fingered glide while the previous note still sounds, reuses it
+            let reuse = cur.filter(|&c| same_pitch(&self.voices[c]) || gs > 1.0);
+            for (i, v) in self.voices.iter_mut().enumerate() {
+                if v.kind == kind && Some(i) != reuse {
+                    v.release(MONO_HANDOFF_SECS, self.sr);
+                }
+            }
+            self.last_midi[kind as usize] = midi;
+            if let Some(c) = reuse {
+                let v = &mut self.voices[c];
+                if !same_pitch(v) {
+                    v.freq_target = target;
+                    v.glide_coef = f32::powf(target / v.freq, 1.0 / gs);
+                }
+                v.retrigger(vel, dur_samples, pan);
+                return;
+            }
+            let slot = self.alloc_slot();
+            self.start_voice(slot, kind, target, 1.0, vel, dur_samples, pan);
+            self.mono_slot[kind as usize] = slot as i32;
+            return;
+        }
+
+        // a re-strike of a sounding pitch retriggers that voice instead of stacking a second one
+        if let Some(v) = self.voices.iter_mut().find(|v| same_pitch(v)) {
+            v.retrigger(vel, dur_samples, pan);
+            self.last_midi[kind as usize] = midi;
+            return;
+        }
+        let slot = self.alloc_slot();
         // portamento (Expression node): start at the previous note's pitch and
         // glide exponentially to the target over glide_samples
-        let gs = self.glide_samples[kind as usize];
         let last = self.last_midi[kind as usize];
         let (freq, coef) = if gs > 1.0 && last > 0.0 && (last - midi).abs() > 0.01 {
-            let start = 440.0 * f32::powf(2.0, (last - 69.0) / 12.0);
+            let start = midi_to_hz(last);
             (start, f32::powf(target / start, 1.0 / gs))
         } else {
             (target, 1.0)
         };
         self.last_midi[kind as usize] = midi;
+        self.start_voice(slot, kind, freq, coef, vel, dur_samples, pan);
+        self.voices[slot].freq_target = target;
+    }
+
+    fn start_voice(&mut self, slot: usize, kind: u32, freq: f32, glide_coef: f32, vel: f32, dur_samples: u32, pan: f32) {
         self.voices[slot] = Voice {
             stage: Stage::Attack,
             kind,
             phase: 0.0,
             freq,
-            freq_target: target,
-            glide_coef: coef,
+            freq_target: freq,
+            glide_coef,
             level: 0.0,
             vel,
             remaining: dur_samples as i64,
+            rel_coef: 0.0,
             lp: 0.0,
             pan,
             press: 1.0,
@@ -287,32 +377,30 @@ impl Engine {
         };
     }
 
+    /// Release every sounding voice of a kind over min(ms, its release time)
+    /// — the host calls this for the pad at each chord change.
+    fn choke_kind(&mut self, kind: u32, ms: f32) {
+        let secs = (ms * 0.001).min(self.voice_params[kind as usize].release);
+        for v in self.voices.iter_mut() {
+            if v.kind == kind {
+                v.release(secs, self.sr);
+            }
+        }
+    }
+
     /// Live MIDI/MPE note-on: a held voice in the live bank with no fixed
     /// duration — it sounds until live_note_off. `id` is the MPE member
     /// channel (0..15) or, in plain-MIDI mode, the note number (0..127).
     fn live_note_on(&mut self, id: usize, midi: f32, vel: f32, pan: f32) {
         // retrigger on the same id replaces its note
+        let rel = self.voice_params[K_LIVE as usize].release;
         if self.live_map[id] >= 0 {
             let old = self.live_map[id] as usize;
             if self.voices[old].kind == K_LIVE {
-                self.voices[old].stage = Stage::Release;
+                self.voices[old].release(rel, self.sr);
             }
         }
-        let mut slot = 0;
-        let mut best = f32::MAX;
-        for (i, v) in self.voices.iter().enumerate() {
-            let i2 = (i + self.rr) % MAX_VOICES;
-            if self.voices[i2].stage == Stage::Off {
-                slot = i2;
-                best = -1.0;
-                break;
-            }
-            if v.level < best {
-                best = v.level;
-                slot = i;
-            }
-        }
-        self.rr = (self.rr + 1) % MAX_VOICES;
+        let slot = self.alloc_slot();
         // a stolen slot may still be mapped from another live id — unmap it
         for m in self.live_map.iter_mut() {
             if *m == slot as i32 {
@@ -330,6 +418,7 @@ impl Engine {
             level: 0.0,
             vel,
             remaining: i64::MAX, // held
+            rel_coef: 0.0,
             lp: 0.0,
             pan,
             press: 1.0,
@@ -341,9 +430,10 @@ impl Engine {
     fn live_note_off(&mut self, id: usize) {
         let slot = self.live_map[id];
         if slot >= 0 {
+            let rel = self.voice_params[K_LIVE as usize].release;
             let v = &mut self.voices[slot as usize];
-            if v.kind == K_LIVE && v.stage != Stage::Off {
-                v.stage = Stage::Release;
+            if v.kind == K_LIVE {
+                v.release(rel, self.sr);
             }
             self.live_map[id] = -1;
         }
@@ -423,8 +513,8 @@ impl Engine {
                         }
                         Stage::Sustain => {}
                         Stage::Release => {
-                            v.level -= inv_sr / p.release * p.sustain.max(0.08);
-                            if v.level <= 0.0 {
+                            v.level *= v.rel_coef;
+                            if v.level <= OFF_LEVEL {
                                 v.level = 0.0;
                                 v.stage = Stage::Off;
                                 continue;
@@ -434,7 +524,7 @@ impl Engine {
                     }
                     v.remaining -= 1;
                     if v.remaining <= 0 && v.stage != Stage::Release {
-                        v.stage = Stage::Release;
+                        v.release(p.release, self.sr);
                     }
                     // portamento glide toward the target pitch
                     if v.glide_coef != 1.0 {
@@ -693,21 +783,65 @@ pub extern "C" fn set_delay(samples: u32, feedback: f32, mix: f32) {
     }
 }
 
-/// Synth node → per-kind voice timbre (wave 0..3, envelope, filter cutoff).
+/// Synth node → per-kind voice timbre (wave 0..3, ADSR, filter cutoff).
+/// A negative decay or sustain means "not set on the node": the kind's default.
 #[no_mangle]
-pub extern "C" fn set_voice(kind: u32, wave: u32, attack: f32, release: f32, cutoff: f32) {
-    if !attack.is_finite() || !release.is_finite() || !cutoff.is_finite() {
+pub extern "C" fn set_voice(kind: u32, wave: u32, attack: f32, decay: f32, sustain: f32, release: f32, cutoff: f32) {
+    if !attack.is_finite() || !decay.is_finite() || !sustain.is_finite() || !release.is_finite() || !cutoff.is_finite() {
         return;
     }
     unsafe {
         if let Some(e) = ENGINE.as_mut() {
             if (kind as usize) < NUM_KINDS {
+                let d = params_for(kind);
                 let p = &mut e.voice_params[kind as usize];
                 p.wave = wave.min(3);
                 p.attack = attack.clamp(0.0005, 2.0);
+                p.decay = if decay < 0.0 { d.decay } else { decay.clamp(0.005, 4.0) };
+                p.sustain = if sustain < 0.0 { d.sustain } else { sustain.clamp(0.0, 1.0) };
                 p.release = release.clamp(0.02, 4.0);
                 p.cutoff = cutoff.clamp(80.0, 12000.0);
             }
+        }
+    }
+}
+
+/// Release all sounding voices of a kind over min(ms, the kind's release).
+#[no_mangle]
+pub extern "C" fn choke_kind(kind: u32, ms: f32) {
+    if !ms.is_finite() || kind as usize >= NUM_KINDS {
+        return;
+    }
+    unsafe {
+        if let Some(e) = ENGINE.as_mut() {
+            e.choke_kind(kind, ms.max(1.0));
+        }
+    }
+}
+
+/// Probe: voices of a kind whose envelope is above `min_level` (0..1).
+#[no_mangle]
+pub extern "C" fn voices_active(kind: u32, min_level: f32) -> u32 {
+    unsafe {
+        match ENGINE.as_ref() {
+            Some(e) => e.voices.iter().filter(|v| v.kind == kind && v.stage != Stage::Off && v.level > min_level).count() as u32,
+            None => 0,
+        }
+    }
+}
+
+/// Probe: envelope level of the loudest voice of a kind at a MIDI pitch (0 = none).
+#[no_mangle]
+pub extern "C" fn voice_level(kind: u32, midi: f32) -> f32 {
+    let target = midi_to_hz(midi);
+    unsafe {
+        match ENGINE.as_ref() {
+            Some(e) => e
+                .voices
+                .iter()
+                .filter(|v| v.kind == kind && v.stage != Stage::Off && (v.freq_target - target).abs() < target * 1.0e-4)
+                .fold(0.0, |m, v| m.max(v.level)),
+            None => 0.0,
         }
     }
 }

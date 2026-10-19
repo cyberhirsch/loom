@@ -89,6 +89,15 @@ function dbToLinear(db: number): number {
   return Math.pow(10, db / 20);
 }
 
+/** Synth node → worklet 'voice' message; decay/sustain left off the node (-1) keep the DSP's per-kind default */
+function voiceMessage(kind: PlayerKind | 'live', s: SynthData) {
+  const opt = (v: unknown) => (v === undefined || v === null || v === '' ? -1 : Number(v));
+  return {
+    type: 'voice', kind, wave: Number(s.wave), attack: Number(s.attack), decay: opt(s.decay), sustain: opt(s.sustain),
+    release: Number(s.release), cutoff: Number(s.cutoff),
+  };
+}
+
 /** Scale-locked glissando (Expression node, PRD §5.2): before a leap of 3+
  *  scale degrees, insert quiet grace notes running the scale into the target.
  *  Degrees stay in-scale by construction — the run can never go chromatic. */
@@ -272,10 +281,7 @@ class WasmEngine {
     if (liveRoute) {
       const audible = liveRoute.toOut && liveRoute.synth !== null;
       this.post({ type: 'mute', kind: 'live', value: !audible });
-      if (liveRoute.synth) {
-        const s = liveRoute.synth;
-        this.post({ type: 'voice', kind: 'live', wave: Number(s.wave), attack: Number(s.attack), release: Number(s.release), cutoff: Number(s.cutoff) });
-      }
+      if (liveRoute.synth) this.post(voiceMessage('live', liveRoute.synth));
       this.post({ type: 'sends', kind: 'live', rev: liveRoute.hasReverb ? 0.3 : 0, del: liveRoute.hasDelay ? 0.25 : 0 });
     } else {
       this.post({ type: 'mute', kind: 'live', value: true });
@@ -285,10 +291,7 @@ class WasmEngine {
       const audible = route.toOut && (route.synth !== null || route.isKit);
       const data = useLoomStore.getState().nodes.find((n) => n.type === kind)?.data;
       this.post({ type: 'mute', kind, value: Boolean(data?.mute) || !audible });
-      if (route.synth) {
-        const s = route.synth;
-        this.post({ type: 'voice', kind, wave: Number(s.wave), attack: Number(s.attack), release: Number(s.release), cutoff: Number(s.cutoff) });
-      }
+      if (route.synth) this.post(voiceMessage(kind, route.synth));
       this.post({
         type: 'sends',
         kind,

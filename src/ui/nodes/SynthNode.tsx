@@ -47,6 +47,33 @@ function SynthNodeView({ id, type, selected }: NodeProps) {
               />
               <span className="val">{(Number(data.attack ?? 0.005) * 1000).toFixed(0)}ms</span>
             </div>
+            {/* decay/sustain unset (older patches) = the engine's default for the part it plays */}
+            <div className="param-row">
+              <label>decay</label>
+              <input
+                className="nodrag"
+                type="range"
+                min={0.02}
+                max={2}
+                step={0.01}
+                value={Number(data.decay ?? 0.3)}
+                onChange={(e) => update(id, { decay: Number(e.target.value) })}
+              />
+              <span className="val">{data.decay === undefined ? 'auto' : `${(Number(data.decay) * 1000).toFixed(0)}ms`}</span>
+            </div>
+            <div className="param-row">
+              <label>sustain</label>
+              <input
+                className="nodrag"
+                type="range"
+                min={0}
+                max={1}
+                step={0.01}
+                value={Number(data.sustain ?? 0.5)}
+                onChange={(e) => update(id, { sustain: Number(e.target.value) })}
+              />
+              <span className="val">{data.sustain === undefined ? 'auto' : Number(data.sustain).toFixed(2)}</span>
+            </div>
             <div className="param-row">
               <label>release</label>
               <input

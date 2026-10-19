@@ -79,6 +79,10 @@ export interface SynthData extends Record<string, unknown> {
   label: string;
   wave: number; // 0 sine, 1 triangle, 2 square, 3 saw
   attack: number; // seconds
+  /** seconds; unset = the DSP's default for the kind it plays */
+  decay?: number;
+  /** level 0..1; unset = the DSP's default for the kind it plays */
+  sustain?: number;
   release: number; // seconds
   cutoff: number; // Hz
 }

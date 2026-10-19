@@ -2,6 +2,8 @@
  * score — print what Loom's generative engine actually plays, as a readable
  * text score plus musical metrics. The theory engine is pure and seeded, so
  * this is the exact music the AudioWorklet would receive (minus glissando).
+ * `heard` runs it through the DSP voice model (src/audio/voiceModel.ts) to
+ * count what actually rings: tail-aware clashes and voices sounding per part.
  *
  *   npm run score -- [--template default|ambient|lofi|techno] [--key C]
  *                    [--scale minor_pent] [--steps 16] [--loops 1] [--evolve]
@@ -15,6 +17,9 @@ import { degreeToMidi, NOTE_NAMES, SCALES, type ScaleId } from '../src/theory/sc
 import { evolveMelody, type NoteEvent } from '../src/theory/melody';
 import type { DrumEvent } from '../src/theory/parts';
 import type { ConductorState, PlayerData, PlayerKind } from '../src/graph/types';
+import { DEFAULT_SCRIPT } from '../src/graph/defaultScript';
+import { parseLoomScript } from '../src/script/loomscript';
+import { partInstruments, ringingAt, simulateVoices, tailClashes, type Envelope, type ModelEvent, type VoiceKind } from '../src/audio/voiceModel';
 
 // ---------------------------------------------------------------------------
 // patches (mirrors DEFAULT_SCRIPT + TEMPLATES in src/graph/store.ts)
@@ -69,6 +74,22 @@ const PATCHES: Record<string, Patch> = {
     },
   },
 };
+
+/** Instruments come from the default patch itself (every template keeps its
+ *  synth nodes): the Synth node and Expression each part is cabled through. */
+const VOICE_KINDS: VoiceKind[] = ['melody', 'chords', 'bass', 'arp'];
+const instruments = (() => {
+  const r = parseLoomScript(DEFAULT_SCRIPT);
+  if (!r.ok) throw new Error('default LoomScript is invalid');
+  const parts = partInstruments(r.project.nodes, r.project.edges);
+  const env = {} as Record<VoiceKind, Envelope>;
+  const glide: Partial<Record<VoiceKind, boolean>> = {};
+  for (const kind of VOICE_KINDS) {
+    env[kind] = parts[kind].env;
+    glide[kind] = parts[kind].portamento > 0;
+  }
+  return { env, glide };
+})();
 
 // ---------------------------------------------------------------------------
 // args
@@ -231,6 +252,48 @@ function clashes(loop: Loop) {
   return { count, examples };
 }
 
+/** What is actually heard: the loops run through the DSP voice model (real
+ *  ADSR tails, mono lead/bass, pad choke), preceded by one wrap-around loop so
+ *  tails ringing into loop 1 count. Clashes/voices only count above -20 dB. */
+function tails(hist: Loop[]) {
+  const stepSec = 60 / (patch.tempo * 4);
+  const loopSec = steps * stepSec;
+  const played = [hist[hist.length - 1], ...hist];
+  const events: ModelEvent[] = [];
+  played.forEach((loop, l) => {
+    for (const kind of VOICE_KINDS) {
+      for (const n of loop.pitched[kind] ?? []) {
+        events.push({ kind, t: (l * steps + n.step) * stepSec, midis: n.midis, lenSec: n.len * stepSec });
+      }
+    }
+  });
+  const from = loopSec;
+  const to = played.length * loopSec;
+  const heard = simulateVoices(events, instruments.env, instruments.glide, to + 3);
+  const bars = (hist.length * steps) / 16;
+  const c = tailClashes(heard, from, to);
+  const voicesRinging: Partial<Record<VoiceKind, { mean: number; max: number }>> = {};
+  for (const kind of VOICE_KINDS) {
+    if (!hist[0].pitched[kind]) continue;
+    let sum = 0;
+    let max = 0;
+    let n = 0;
+    // sample between grid points: exactly on an onset the new note is still in its attack
+    for (let t = from + stepSec / 8; t < to; t += stepSec / 4, n++) {
+      const r = ringingAt(heard, kind, t);
+      sum += r;
+      max = Math.max(max, r);
+    }
+    voicesRinging[kind] = { mean: +(sum / n).toFixed(2), max };
+  }
+  return {
+    tailClashesPerBar: +(c.cross / bars).toFixed(2),
+    tailClashesSamePartPerBar: +(c.same / bars).toFixed(2),
+    voicesRinging,
+    examples: c.examples,
+  };
+}
+
 function similarity(a: Sounding[] | undefined, b: Sounding[] | undefined): number | null {
   if (!a || !b) return null;
   const key = (n: Sounding) => `${n.step}:${n.midis.join('.')}`;
@@ -282,6 +345,7 @@ const metrics = {
       )
     : null,
   semitoneClashes: clashes(first),
+  heard: tails(history),
   loopToLoopSimilarity:
     history.length > 1
       ? history.slice(1).map((h, i) => ({
