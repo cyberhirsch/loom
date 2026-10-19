@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { buildMidi } from './midi';
 import { generateProgression, progressionToSteps, type HarmonicContext } from '../theory/harmony';
 import { generateMelody } from '../theory/melody';
-import { generateDrums } from '../theory/parts';
+import { generateBass, generateDrums } from '../theory/parts';
 
 function ctx(): HarmonicContext {
   return {
@@ -52,6 +52,39 @@ describe('MIDI export (PRD §6.10 / M4 slice)', () => {
     const a = buildMidi(c, [{ kind: 'melody', pattern: melody, register: 0 }], 120);
     const b = buildMidi(c, [{ kind: 'melody', pattern: melody, register: 0 }], 120);
     expect(a).toEqual(b);
+  });
+
+  it('fractional bass lengths keep every note-on on the 16th grid', () => {
+    const c = ctx();
+    const kickSteps = generateDrums(c, { seed: 5, density: 0.7, syncopation: 0.5 }).filter((e) => e.lane === 0).map((e) => e.step);
+    for (const articulation of [0.33, 0.77]) {
+      const bass = generateBass(c, { seed: 5, density: 0.9, register: 0, kickSteps, articulation });
+      expect(bass.some((e) => !Number.isInteger(e.lengthSteps * 120))).toBe(true);
+      const loops = 4;
+      const bytes = buildMidi(c, [{ kind: 'bass', pattern: bass, register: 0 }], 120, loops);
+      // second MTrk = bass track; walk its events summing deltas
+      let offset = 14;
+      offset += 8 + ((bytes[offset + 4] << 24) | (bytes[offset + 5] << 16) | (bytes[offset + 6] << 8) | bytes[offset + 7]);
+      const end = offset + 8 + ((bytes[offset + 4] << 24) | (bytes[offset + 5] << 16) | (bytes[offset + 6] << 8) | bytes[offset + 7]);
+      let i = offset + 8;
+      let tick = 0;
+      const onTicks: number[] = [];
+      while (i < end) {
+        let delta = 0;
+        while (bytes[i] & 0x80) delta = (delta << 7) | (bytes[i++] & 0x7f);
+        delta = (delta << 7) | bytes[i++];
+        tick += delta;
+        const status = bytes[i];
+        if (status === 0xff) {
+          i += 3 + bytes[i + 2];
+        } else {
+          if ((status & 0xf0) === 0x90) onTicks.push(tick);
+          i += 3;
+        }
+      }
+      const expected = Array.from({ length: loops }, (_, l) => bass.map((e) => (l * c.steps + e.step) * 120)).flat();
+      expect(onTicks).toEqual(expected);
+    }
   });
 
   it('note-ons all have matching note-offs', () => {

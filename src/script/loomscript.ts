@@ -39,6 +39,7 @@ const PLAYER_PARAMS: Record<string, string> = {
   density: 'density',
   adventure: 'adventurousness',
   syncopate: 'syncopation',
+  artic: 'articulation',
   register: 'register',
   volume: 'volume',
   mute: 'mute',
@@ -63,6 +64,7 @@ function playerLine(n: LoomNode): string {
     }
     if (param === 'adventure' && n.type !== 'melody') continue;
     if (param === 'syncopate' && n.type !== 'drums') continue;
+    if (param === 'artic' && n.type !== 'bass') continue;
     if (d[field] !== undefined) parts.push(`${param}=${round(Number(d[field]))}`);
   }
   return parts.join(' ') + pos(n);

@@ -14,6 +14,8 @@ export interface NoteEvent {
   degree: number; // scale degree, can exceed scale length (octave up)
   velocity: number;
   lengthSteps: number;
+  /** weak-beat approach/passing tone: allowed off the chord */
+  passing?: boolean;
 }
 
 export interface MelodyParams {

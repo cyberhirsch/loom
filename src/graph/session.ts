@@ -36,6 +36,21 @@ export interface PatternOpts {
   motif?: MotifData | null;
   /** evolve depth for the theme grammar (melody) */
   generation?: number;
+  /** the drum part's kick steps, which the bass locks to — generate drums first */
+  kickSteps?: readonly number[];
+}
+
+export function kickStepsOf(drums: readonly DrumEvent[]): number[] {
+  return drums.filter((e) => e.lane === 0).map((e) => e.step);
+}
+
+/** Kicks of the patch's drum player as the bass hears them (its frozen take, else its base pattern). */
+export function drumKicks(nodes: LoomNode[], ctx: HarmonicContext): number[] | undefined {
+  const node = nodes.find((n) => n.type === 'drums');
+  if (!node) return undefined;
+  const data = node.data as unknown as PlayerData;
+  const take = data.frozen && Array.isArray(data.frozenPattern) ? (data.frozenPattern as DrumEvent[]) : null;
+  return kickStepsOf(take ?? (computeBasePattern('drums', ctx, data) as DrumEvent[]));
 }
 
 export function computeBasePattern(
@@ -58,7 +73,13 @@ export function computeBasePattern(
     case 'chords':
       return generateChords(ctx, { seed: data.seed, density, register: data.register });
     case 'bass':
-      return generateBass(ctx, { seed: data.seed, density, register: data.register });
+      return generateBass(ctx, {
+        seed: data.seed,
+        density,
+        register: data.register,
+        kickSteps: opts.kickSteps,
+        articulation: data.articulation,
+      });
     case 'arp':
       return generateArp(ctx, { seed: data.seed, density, register: data.register });
     case 'drums':

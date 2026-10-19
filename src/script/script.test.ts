@@ -135,6 +135,20 @@ lead: synth attack=4ms cutoff=5.2k
     expect(parseOrThrow(serializeProject(pHalf)).nodes.find((n) => n.type === 'synth')!.data).toEqual(sub.data);
   });
 
+  it('bass artic is optional: old bass lines stay byte-identical, the new key round-trips', () => {
+    const oldLine = 'bass seed=303 density=0.5 register=0 volume=-10 @ 700,520';
+    const pOld = parseOrThrow(oldLine);
+    expect('articulation' in pOld.nodes[0].data).toBe(false);
+    expect(serializeProject(pOld).split('\n')).toContain(oldLine);
+
+    const newLine = 'bass seed=733 density=0.75 artic=0.5 register=0 volume=-8 @ 700,520';
+    const pNew = parseOrThrow(newLine);
+    expect(pNew.nodes[0].data.articulation).toBe(0.5);
+    const text = serializeProject(pNew);
+    expect(text.split('\n')).toContain(newLine);
+    expect(parseOrThrow(text).nodes.find((n) => n.type === 'bass')!.data).toEqual(pNew.nodes[0].data);
+  });
+
   it('reports typed-cable mistakes with line numbers and guidance', () => {
     const r = parseLoomScript(`melody seed=1
 delay1: delay

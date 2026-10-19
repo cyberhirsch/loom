@@ -406,7 +406,7 @@ const TEMPLATES: Record<TemplateId, Template> = {
     players: {
       melody: { seed: 731, density: 0.35, adventurousness: 0.5, volume: -14, mute: true },
       chords: { seed: 732, density: 0.3, volume: -18 },
-      bass: { seed: 733, density: 0.75, volume: -8 },
+      bass: { seed: 733, density: 0.75, volume: -8, articulation: 0.5 },
       drums: { seed: 734, density: 0.85, syncopation: 0.5, volume: -6, mute: false },
       arp: { seed: 735, density: 0.8, volume: -13, register: 1, mute: false },
     },

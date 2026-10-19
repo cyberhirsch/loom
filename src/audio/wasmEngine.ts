@@ -6,7 +6,7 @@
  */
 
 import { useLoomStore, densityModulations } from '../graph/store';
-import { computeContext, computeBasePattern, motifForPlayer, ROLE_OCTAVE } from '../graph/session';
+import { computeContext, computeBasePattern, kickStepsOf, motifForPlayer, ROLE_OCTAVE } from '../graph/session';
 import { degreeToMidi } from '../theory/scales';
 import { chordMidi, buildJourney, type HarmonicContext } from '../theory/harmony';
 import { evolveMelody, type NoteEvent } from '../theory/melody';
@@ -386,8 +386,11 @@ class WasmEngine {
     }
     const energy = energyScalar(fresh.energyCurve);
 
-    for (const node of fresh.nodes) {
-      if (!PLAYER_KINDS.includes(node.type as PlayerKind)) continue;
+    // drums first: the bass locks to the kicks they play this loop
+    const players = fresh.nodes.filter((n) => PLAYER_KINDS.includes(n.type as PlayerKind));
+    players.sort((a, b) => Number(b.type === 'drums') - Number(a.type === 'drums'));
+    let kicks: number[] | undefined;
+    for (const node of players) {
       const kind = node.type as PlayerKind;
       const data = node.data as unknown as PlayerData;
 
@@ -412,11 +415,13 @@ class WasmEngine {
         const take = (node.data as Record<string, unknown>).frozenPattern as NoteEvent[] | DrumEvent[];
         this.patterns.set(node.id, take);
         fresh.publishPattern(node.id, take);
+        if (kind === 'drums' && !kicks) kicks = kickStepsOf(take as DrumEvent[]);
         continue;
       }
 
       const motif = kind === 'melody' ? motifForPlayer(fresh.nodes, edges, node.id) : null;
-      const signature = JSON.stringify([kind, data.seed, effDensity, data.adventurousness, data.syncopation, data.register, ctx.keyIndex, ctx.scaleId, ctx.chordAtStep, motif]);
+      const kickSteps = kind === 'bass' ? kicks : undefined;
+      const signature = JSON.stringify([kind, data.seed, effDensity, data.adventurousness, data.syncopation, data.register, data.articulation, ctx.keyIndex, ctx.scaleId, ctx.chordAtStep, motif, kickSteps]);
       const changed = signature !== this.signatures.get(node.id);
 
       if (fresh.conductor.evolveOn && !changed && this.patterns.has(node.id) && (kind === 'melody' || kind === 'arp' || kind === 'bass')) {
@@ -429,11 +434,12 @@ class WasmEngine {
         this.patterns.set(node.id, evolved);
         fresh.publishPattern(node.id, evolved);
       } else if (changed || force || !this.patterns.has(node.id)) {
-        const pattern = computeBasePattern(kind, ctx, data, { densityOverride: effDensity, motif });
+        const pattern = computeBasePattern(kind, ctx, data, { densityOverride: effDensity, motif, kickSteps });
         this.patterns.set(node.id, pattern);
         this.signatures.set(node.id, signature);
         fresh.publishPattern(node.id, pattern);
       }
+      if (kind === 'drums' && !kicks) kicks = kickStepsOf(this.patterns.get(node.id) as DrumEvent[]);
     }
     this.hctx = ctx;
     this.post({ type: 'patterns', patterns: this.resolve(ctx), immediate: force });

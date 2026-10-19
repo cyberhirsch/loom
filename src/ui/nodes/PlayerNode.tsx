@@ -1,7 +1,7 @@
 import { memo } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { useLoomStore } from '../../graph/store';
-import { computeContext, computeBasePattern } from '../../graph/session';
+import { computeContext, computeBasePattern, drumKicks } from '../../graph/session';
 import type { PlayerData, PlayerKind } from '../../graph/types';
 import { PatternPreview } from '../PatternPreview';
 
@@ -22,6 +22,7 @@ function Slider({
   step = 0.01,
   format = (v: number) => v.toFixed(2),
   modulated = false,
+  fallback = 0,
 }: {
   id: string;
   field: string;
@@ -31,8 +32,9 @@ function Slider({
   step?: number;
   format?: (v: number) => string;
   modulated?: boolean;
+  fallback?: number;
 }) {
-  const value = useLoomStore((s) => Number(s.nodes.find((n) => n.id === id)?.data[field] ?? 0));
+  const value = useLoomStore((s) => Number(s.nodes.find((n) => n.id === id)?.data[field] ?? fallback));
   const update = useLoomStore((s) => s.updateNodeData);
   return (
     <div className={`param-row${modulated ? ' is-modulated' : ''}`}>
@@ -85,9 +87,12 @@ function PlayerNodeView({ id, type, selected }: NodeProps) {
               } else {
                 const s = useLoomStore.getState();
                 const chordsSeed = Number(s.nodes.find((n) => n.type === 'chords')?.data.seed ?? 1);
+                const ctx = computeContext(s.conductor, chordsSeed);
                 const take =
                   s.patterns[id] ??
-                  computeBasePattern(kind, computeContext(s.conductor, chordsSeed), data as unknown as PlayerData);
+                  computeBasePattern(kind, ctx, data as unknown as PlayerData, {
+                    kickSteps: kind === 'bass' ? drumKicks(s.nodes, ctx) : undefined,
+                  });
                 update(id, { frozen: true, frozenPattern: take });
               }
             }}
@@ -110,6 +115,7 @@ function PlayerNodeView({ id, type, selected }: NodeProps) {
         />
         {kind === 'melody' && <Slider id={id} field="adventurousness" label="adventure" />}
         {kind === 'drums' && <Slider id={id} field="syncopation" label="syncopate" />}
+        {kind === 'bass' && <Slider id={id} field="articulation" label="legato" min={0.2} max={1} fallback={0.95} />}
         {kind !== 'drums' && (
           <Slider id={id} field="register" label="register" min={-2} max={2} step={1} format={(v) => (v > 0 ? `+${v}` : String(v))} />
         )}

@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { useLoomStore } from '../graph/store';
-import { computeContext, computeBasePattern, motifForPlayer } from '../graph/session';
+import { computeContext, computeBasePattern, drumKicks, motifForPlayer } from '../graph/session';
 import type { PlayerData, PlayerKind } from '../graph/types';
 import type { NoteEvent } from '../theory/melody';
 import type { DrumEvent } from '../theory/parts';
@@ -17,14 +17,16 @@ export function PatternPreview({ id, kind }: { id: string; kind: PlayerKind }) {
   const currentStep = useLoomStore((s) => s.currentStep);
 
   const motif = useLoomStore((s) => (kind === 'melody' ? motifForPlayer(s.nodes, s.edges, id) : null));
+  const drumsNode = useLoomStore((s) => (kind === 'bass' ? s.nodes.find((n) => n.type === 'drums') : undefined));
 
   const pattern = useMemo(() => {
     if (data?.frozen && Array.isArray(data.frozenPattern)) return data.frozenPattern;
     if (published) return published;
     if (!data) return [];
     const ctx = computeContext(conductor, chordsSeed);
-    return computeBasePattern(kind, ctx, data, { motif });
-  }, [published, conductor, chordsSeed, data, kind, motif]);
+    const kickSteps = drumsNode ? drumKicks([drumsNode], ctx) : undefined;
+    return computeBasePattern(kind, ctx, data, { motif, kickSteps });
+  }, [published, conductor, chordsSeed, data, kind, motif, drumsNode]);
 
   const steps = Number(conductor.steps) || 16;
   const cw = W / steps;

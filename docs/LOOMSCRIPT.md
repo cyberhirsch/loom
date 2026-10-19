@@ -61,8 +61,8 @@ melody seed=101 density=0.55 adventure=0.35 register=0 volume=-9 mute=off
 |---|---|
 | `melody` | the lead voice; `adventure` (0..1) = interval daring |
 | `chords` | comping pads; its `seed` drives the shared chord progression (harmony-first) |
-| `bass` | root-driven low end |
-| `drums` | kick/snare/hat; `syncopate` (0..1) = off-grid feel |
+| `bass` | root on every chord change, locked to the kick; `artic` (0.1..1, optional, default 0.95; lower values are clamped) = note length as a share of the gap to the next note (0.95 legato, 0.5 staccato) |
+| `drums` | kick on 1 and snare on 2 & 4 always; `syncopate` (0..1) = off-grid feel |
 | `arp` | ornamental arpeggios |
 
 Common params: `seed` (int — same seed, same music), `density` (0..1, how busy), `register` (-2..2 octave offset), `volume` (dB, ≤0), `mute` (on/off).

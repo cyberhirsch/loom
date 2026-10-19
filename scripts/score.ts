@@ -11,7 +11,7 @@
  *                    [--arp 505] [--json]
  */
 
-import { computeContext, computeBasePattern, ROLE_OCTAVE } from '../src/graph/session';
+import { computeContext, computeBasePattern, kickStepsOf, ROLE_OCTAVE } from '../src/graph/session';
 import { chordMidi, type HarmonicContext } from '../src/theory/harmony';
 import { degreeToMidi, NOTE_NAMES, SCALES, type ScaleId } from '../src/theory/scales';
 import { evolveMelody, type NoteEvent } from '../src/theory/melody';
@@ -68,7 +68,7 @@ const PATCHES: Record<string, Patch> = {
     players: {
       melody: { seed: 731, density: 0.35, adventurousness: 0.5, register: 0, mute: true },
       chords: { seed: 732, density: 0.3, register: 0 },
-      bass: { seed: 733, density: 0.75, register: 0 },
+      bass: { seed: 733, density: 0.75, register: 0, articulation: 0.5 },
       drums: { seed: 734, density: 0.85, syncopation: 0.5 },
       arp: { seed: 735, density: 0.8, register: 1 },
     },
@@ -165,9 +165,11 @@ function chordName(midis: number[]): string {
 // generation; arp/bass mutate one note per loop)
 // ---------------------------------------------------------------------------
 
-const ORDER: PlayerKind[] = ['arp', 'melody', 'chords', 'bass', 'drums'];
+// drums first: the bass locks to their kicks (muted drums still lead it, as in the engine)
+const ORDER: PlayerKind[] = ['drums', 'arp', 'melody', 'chords', 'bass'];
 const chordsSeed = Number(patch.players.chords.seed);
 const ctx = computeContext(conductor, chordsSeed);
+const kickSteps = kickStepsOf(computeBasePattern('drums', ctx, fullData(patch.players.drums)) as DrumEvent[]);
 
 interface Loop {
   pitched: Partial<Record<PlayerKind, Sounding[]>>;
@@ -188,7 +190,7 @@ for (let l = 0; l < loops; l++) {
         kind === 'melody'
           ? computeBasePattern(kind, ctx, data, { generation: ++generation })
           : evolveMelody(ctx, prevRaw[kind] as NoteEvent[], data.seed, ++generation);
-    } else raw[kind] = l > 0 && prevRaw[kind] ? prevRaw[kind] : computeBasePattern(kind, ctx, data);
+    } else raw[kind] = l > 0 && prevRaw[kind] ? prevRaw[kind] : computeBasePattern(kind, ctx, data, { kickSteps: kind === 'bass' ? kickSteps : undefined });
   }
   const pitched: Loop['pitched'] = {};
   for (const kind of ['melody', 'chords', 'bass', 'arp'] as PlayerKind[]) {

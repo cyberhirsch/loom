@@ -4,7 +4,7 @@
  */
 
 import { useLoomStore } from '../graph/store';
-import { computeContext, computeBasePattern, ROLE_OCTAVE } from '../graph/session';
+import { computeContext, computeBasePattern, drumKicks, ROLE_OCTAVE } from '../graph/session';
 import { degreeToMidi } from '../theory/scales';
 import { chordMidi } from '../theory/harmony';
 import type { NoteEvent } from '../theory/melody';
@@ -30,7 +30,7 @@ function resolveWire() {
     const pattern =
       (data.frozen && (data.frozenPattern as NoteEvent[] | DrumEvent[])) ||
       s.patterns[node.id] ||
-      computeBasePattern(kind, ctx, data);
+      computeBasePattern(kind, ctx, data, { kickSteps: kind === 'bass' ? drumKicks(s.nodes, ctx) : undefined });
     if (kind === 'drums') {
       wire.drums = (pattern as DrumEvent[]).map((ev) => ({ step: ev.step, lane: ev.lane, vel: ev.velocity }));
     } else {

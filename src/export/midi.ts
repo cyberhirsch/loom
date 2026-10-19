@@ -93,7 +93,8 @@ export function buildMidi(ctx: HarmonicContext, parts: MidiPart[], bpm: number, 
               ? chordMidi(ctx, ev.degree, octave)
               : [degreeToMidi(ctx.keyIndex, ctx.scaleId, ev.degree, octave)];
           const vel = Math.round(ev.velocity * 127) & 0x7f;
-          const durTicks = Math.max(1, ev.lengthSteps) * TICKS_PER_STEP - 4;
+          // lengths can be fractional (bass articulation); SMF deltas are integers
+          const durTicks = Math.max(1, Math.round(ev.lengthSteps * TICKS_PER_STEP) - 4);
           for (const midi of midis) {
             const clamped = Math.max(0, Math.min(127, midi));
             events.push({ tick, order: 1, bytes: [0x90 | ch, clamped, vel] });

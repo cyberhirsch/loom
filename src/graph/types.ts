@@ -54,6 +54,7 @@ export interface PlayerData extends Record<string, unknown> {
   density: number; // 0..1
   adventurousness: number; // 0..1 (melody)
   syncopation: number; // 0..1 (drums)
+  articulation?: number; // bass gate as a fraction of the gap to the next note (default 0.95)
   register: number; // octave offset from role default
   mute: boolean;
   volume: number; // dB

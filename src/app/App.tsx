@@ -2,7 +2,7 @@ import { ReactFlow, ReactFlowProvider, Background, Controls, MiniMap, Background
 import '@xyflow/react/dist/style.css';
 import { useLoomStore } from '../graph/store';
 import { engine } from '../audio/wasmEngine';
-import { computeContext, computeBasePattern } from '../graph/session';
+import { computeContext, computeBasePattern, drumKicks } from '../graph/session';
 import { buildMidi, downloadMidi, type MidiPart } from '../export/midi';
 import { bounceWav } from '../export/wav';
 import type { PlayerData, PlayerKind } from '../graph/types';
@@ -99,7 +99,9 @@ function Shell() {
     for (const node of s.nodes) {
       if (!kinds.includes(node.type as PlayerKind) || node.data.mute) continue;
       const kind = node.type as PlayerKind;
-      const pattern = s.patterns[node.id] ?? computeBasePattern(kind, ctx, node.data as unknown as PlayerData);
+      const pattern =
+        s.patterns[node.id] ??
+        computeBasePattern(kind, ctx, node.data as unknown as PlayerData, { kickSteps: kind === 'bass' ? drumKicks(s.nodes, ctx) : undefined });
       parts.push({ kind, pattern, register: Number(node.data.register ?? 0) });
     }
     downloadMidi(buildMidi(ctx, parts, s.conductor.tempo, 4), 'loom-loop.mid');
