@@ -1,8 +1,8 @@
 /** The default patch IS a LoomScript document (docs/LOOMSCRIPT.md) — the same
  *  format the autosave persists and any LLM can read and edit. Kept free of
  *  store/browser imports so node tools (scripts/score.ts) can read it. */
-export const DEFAULT_SCRIPT = `# Loom — default ensemble (LoomScript v1)
-loom 1
+export const DEFAULT_SCRIPT = `# Loom — default ensemble (LoomScript v2)
+loom 2
 
 conductor key=C scale=minor_pent tempo=102 phrase=16 evolve=off journey=off every=4 @ 40,140
 arranger off @ 40,560

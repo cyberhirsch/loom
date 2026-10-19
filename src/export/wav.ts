@@ -4,9 +4,8 @@
  */
 
 import { useLoomStore } from '../graph/store';
-import { computeContext, computeBasePattern, drumKicks, ROLE_OCTAVE } from '../graph/session';
-import { degreeToMidi } from '../theory/scales';
-import { chordMidi } from '../theory/harmony';
+import { contextFor, computeBasePattern, drumKicks, ROLE_OCTAVE } from '../graph/session';
+import { eventMidis } from '../theory/harmony';
 import type { NoteEvent } from '../theory/melody';
 import type { DrumEvent } from '../theory/parts';
 import type { PlayerData, PlayerKind } from '../graph/types';
@@ -20,8 +19,7 @@ function dbToLinear(db: number): number {
 /** Resolve current store patterns into the worklet wire format. */
 function resolveWire() {
   const s = useLoomStore.getState();
-  const chordsNode = s.nodes.find((n) => n.type === 'chords');
-  const ctx = computeContext(s.conductor, chordsNode ? Number(chordsNode.data.seed) : 1);
+  const ctx = contextFor(s.conductor, s.nodes);
   const wire: Record<string, unknown> = {};
   for (const node of s.nodes) {
     if (!PLAYER_KINDS.includes(node.type as PlayerKind)) continue;
@@ -37,7 +35,7 @@ function resolveWire() {
       const octave = ROLE_OCTAVE[kind] + Number(data.register ?? 0);
       wire[kind] = (pattern as NoteEvent[]).map((ev) => ({
         step: ev.step,
-        midis: kind === 'chords' ? chordMidi(ctx, ev.degree, octave) : [degreeToMidi(ctx.keyIndex, ctx.scaleId, ev.degree, octave)],
+        midis: eventMidis(ctx, kind, ev.degree, octave),
         vel: ev.velocity,
         lenSteps: ev.lengthSteps,
       }));

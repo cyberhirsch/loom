@@ -2,7 +2,7 @@ import { ReactFlow, ReactFlowProvider, Background, Controls, MiniMap, Background
 import '@xyflow/react/dist/style.css';
 import { useLoomStore } from '../graph/store';
 import { engine } from '../audio/wasmEngine';
-import { computeContext, computeBasePattern, drumKicks } from '../graph/session';
+import { contextFor, computeBasePattern, drumKicks } from '../graph/session';
 import { buildMidi, downloadMidi, type MidiPart } from '../export/midi';
 import { bounceWav } from '../export/wav';
 import type { PlayerData, PlayerKind } from '../graph/types';
@@ -92,8 +92,7 @@ function Shell() {
 
   const exportMidi = () => {
     const s = useLoomStore.getState();
-    const chordsNode = s.nodes.find((n) => n.type === 'chords');
-    const ctx = computeContext(s.conductor, chordsNode ? Number(chordsNode.data.seed) : 1);
+    const ctx = contextFor(s.conductor, s.nodes);
     const kinds: PlayerKind[] = ['melody', 'chords', 'bass', 'drums', 'arp'];
     const parts: MidiPart[] = [];
     for (const node of s.nodes) {

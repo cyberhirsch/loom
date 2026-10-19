@@ -8,12 +8,12 @@
  *   npm run score -- [--template default|ambient|lofi|techno] [--key C]
  *                    [--scale minor_pent] [--steps 16] [--loops 1] [--evolve]
  *                    [--melody 101] [--chords 202] [--bass 303] [--drums 404]
- *                    [--arp 505] [--json]
+ *                    [--arp 505] [--colour triad|7th|quartal] [--json]
  */
 
 import { computeContext, computeBasePattern, kickStepsOf, ROLE_OCTAVE } from '../src/graph/session';
-import { chordMidi, type HarmonicContext } from '../src/theory/harmony';
-import { degreeToMidi, NOTE_NAMES, SCALES, type ScaleId } from '../src/theory/scales';
+import { chordAt, chordMidi, eventMidis, isChangeAt, roleContext, type ChordColour, type HarmonicContext } from '../src/theory/harmony';
+import { NOTE_NAMES, SCALES, type ScaleId } from '../src/theory/scales';
 import { evolveMelody, type NoteEvent } from '../src/theory/melody';
 import type { DrumEvent } from '../src/theory/parts';
 import type { ConductorState, PlayerData, PlayerKind } from '../src/graph/types';
@@ -108,6 +108,7 @@ if (opt('scale')) patch.scaleId = opt('scale') as ScaleId;
 for (const k of ['melody', 'chords', 'bass', 'drums', 'arp'] as PlayerKind[]) {
   if (opt(k)) patch.players[k].seed = Number(opt(k));
 }
+if (opt('colour')) patch.players.chords.colour = opt('colour') as ChordColour;
 const steps = Number(opt('steps') ?? 16);
 const loops = Number(opt('loops') ?? 1);
 const evolve = flag('evolve');
@@ -140,7 +141,7 @@ function resolvePitched(kind: PlayerKind, ctx: HarmonicContext, pattern: NoteEve
     .sort((a, b) => a.step - b.step)
     .map((ev) => ({
       step: ev.step,
-      midis: kind === 'chords' ? chordMidi(ctx, ev.degree, octave) : [degreeToMidi(ctx.keyIndex, ctx.scaleId, ev.degree, octave)],
+      midis: eventMidis(ctx, kind as Exclude<PlayerKind, 'drums'>, ev.degree, octave),
       vel: ev.velocity,
       len: ev.lengthSteps,
     }));
@@ -155,6 +156,8 @@ function chordName(midis: number[]): string {
   const SUFFIX: Record<string, string> = {
     '0,4,7': '', '0,3,7': 'm', '0,3,6': 'dim', '0,4,8': 'aug', '0,5,7': 'sus4', '0,2,7': 'sus2',
     '0,4,7,11': 'maj7', '0,3,7,10': 'm7', '0,4,7,10': '7', '0,3,6,10': 'm7b5',
+    // quartal colour: stacked fourths (a major third where the mode has no perfect fourth)
+    '0,5,10': '4ths', '0,5,9': '4ths', '0,4,9': '4ths',
   };
   const s = SUFFIX[ivs];
   return s !== undefined ? `${NOTE_NAMES[root]}${s}` : `${NOTE_NAMES[root]}?{${midis.map((m) => NOTE_NAMES[pc(m)]).join('-')}}`;
@@ -168,7 +171,7 @@ function chordName(midis: number[]): string {
 // drums first: the bass locks to their kicks (muted drums still lead it, as in the engine)
 const ORDER: PlayerKind[] = ['drums', 'arp', 'melody', 'chords', 'bass'];
 const chordsSeed = Number(patch.players.chords.seed);
-const ctx = computeContext(conductor, chordsSeed);
+const ctx = computeContext(conductor, chordsSeed, patch.players.chords.colour);
 const kickSteps = kickStepsOf(computeBasePattern('drums', ctx, fullData(patch.players.drums)) as DrumEvent[]);
 
 interface Loop {
@@ -189,7 +192,7 @@ for (let l = 0; l < loops; l++) {
       raw[kind] =
         kind === 'melody'
           ? computeBasePattern(kind, ctx, data, { generation: ++generation })
-          : evolveMelody(ctx, prevRaw[kind] as NoteEvent[], data.seed, ++generation);
+          : evolveMelody(roleContext(ctx, kind as 'arp' | 'bass'), prevRaw[kind] as NoteEvent[], data.seed, ++generation);
     } else raw[kind] = l > 0 && prevRaw[kind] ? prevRaw[kind] : computeBasePattern(kind, ctx, data, { kickSteps: kind === 'bass' ? kickSteps : undefined });
   }
   const pitched: Loop['pitched'] = {};
@@ -204,8 +207,8 @@ for (let l = 0; l < loops; l++) {
 // metrics
 // ---------------------------------------------------------------------------
 
-/** pitch classes of the chord sounding at a step (the actual chord MIDI, octave-free) */
-const chordPcsAt = (s: number) => new Set(chordMidi(ctx, ctx.chordAtStep[s], 0).map(pc));
+/** pitch classes of the chord sounding at a step (its colour tones included) */
+const chordPcsAt = (s: number) => new Set([...chordAt(ctx, s).pcs, ...(chordAt(ctx, s).ext ?? [])]);
 
 function partMetrics(kind: PlayerKind, notes: Sounding[]) {
   const flat = notes.flatMap((n) => n.midis.map((m) => ({ ...n, m })));
@@ -309,7 +312,8 @@ function similarity(a: Sounding[] | undefined, b: Sounding[] | undefined): numbe
 const first = history[0];
 const kick = new Set((first.drums ?? []).filter((d) => d.lane === 0).map((d) => d.step));
 const bassNotes = first.pitched.bass ?? [];
-const chordChanges = ctx.chordAtStep.filter((c, i) => i === 0 || c !== ctx.chordAtStep[i - 1]).length;
+const changeSteps = ctx.chordIdxAtStep.map((_, i) => i).filter((i) => isChangeAt(ctx, i));
+const chordChanges = changeSteps.length;
 const secondsPerLoop = (steps * 60) / (patch.tempo * 4);
 
 const metrics = {
@@ -321,13 +325,12 @@ const metrics = {
   bars: steps / 16,
   secondsPerLoop: +secondsPerLoop.toFixed(2),
   harmony: {
-    progression: [...new Set(ctx.chordAtStep.map((c, i) => `${i}:${c}`))].length,
+    progression: ctx.chords.length,
     chordChangesPerLoop: chordChanges,
     chordChangesPerBar: +(chordChanges / (steps / 16)).toFixed(2),
     secondsPerChord: +(secondsPerLoop / chordChanges).toFixed(2),
-    chords: ctx.chordAtStep
-      .map((c, i) => (i === 0 || c !== ctx.chordAtStep[i - 1] ? `@${i} ${chordName(chordMidi(ctx, c, 0))}` : null))
-      .filter(Boolean),
+    chords: changeSteps.map((i) => `@${i} ${chordName(chordMidi(ctx, chordAt(ctx, i).degree, 0))}`),
+    roman: changeSteps.map((i) => `${chordAt(ctx, i).roman} ${chordAt(ctx, i).func}`),
   },
   parts: Object.entries(first.pitched).map(([k, notes]) => partMetrics(k as PlayerKind, notes!)),
   drums: first.drums
@@ -343,7 +346,7 @@ const metrics = {
     : null,
   bassOnRootPct: bassNotes.length
     ? Math.round(
-        (bassNotes.filter((n) => pc(n.midis[0]) === pc(chordMidi(ctx, ctx.chordAtStep[n.step], 0)[0])).length / bassNotes.length) * 100,
+        (bassNotes.filter((n) => pc(n.midis[0]) === chordAt(ctx, n.step).rootPc).length / bassNotes.length) * 100,
       )
     : null,
   semitoneClashes: clashes(first),
@@ -404,7 +407,7 @@ for (let l = 0; l < history.length; l++) {
   const h = history[l];
   if (history.length > 1) console.log(`--- loop ${l + 1} ---`);
   console.log(ruler());
-  const chordRow = ctx.chordAtStep.map((c, i) => (i === 0 || c !== ctx.chordAtStep[i - 1] ? chordName(chordMidi(ctx, c, 0)) : ''));
+  const chordRow = ctx.chordIdxAtStep.map((_, i) => (isChangeAt(ctx, i) ? chordName(chordMidi(ctx, chordAt(ctx, i).degree, 0)) : ''));
   let cr = pad('harmony').padEnd(9);
   for (let s = 0; s < steps; s++) cr += (s % 16 === 0 ? '|' : s % 4 === 0 ? ':' : ' ') + pad(chordRow[s] || '');
   console.log(cr);

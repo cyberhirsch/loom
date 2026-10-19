@@ -81,8 +81,26 @@ export function degreeToMidi(keyIndex: number, scaleId: ScaleId, degree: number,
   return 60 + keyIndex + iv[idx] + 12 * (octFromDegree + octave);
 }
 
-/** True if the scale degree is a chord tone of the triad on `chordDegree` (root/3rd/5th stacked in scale thirds). */
-export function isChordTone(degree: number, chordDegree: number, scaleLen: number): boolean {
-  const rel = (((degree - chordDegree) % scaleLen) + scaleLen) % scaleLen;
-  return rel === 0 || rel === 2 || rel === 4;
+/** The 7-note mode a scale's harmony is built in: a pentatonic scale is a filter
+ *  over its parent (the key collection), a heptatonic mode is its own parent. */
+export const PARENT: Record<ScaleId, ScaleId> = {
+  major_pent: 'ionian',
+  minor_pent: 'aeolian',
+  ionian: 'ionian',
+  aeolian: 'aeolian',
+  dorian: 'dorian',
+  phrygian: 'phrygian',
+  lydian: 'lydian',
+  mixolydian: 'mixolydian',
+};
+
+export function parentScale(scaleId: ScaleId): ScaleId {
+  return PARENT[scaleId];
 }
+
+/** Absolute pitch classes (0 = C) of a scale in a key. */
+export function scalePcs(keyIndex: number, scaleId: ScaleId): number[] {
+  return SCALES[scaleId].intervals.map((iv) => (keyIndex + iv) % 12);
+}
+
+export const pcOf = (midi: number) => ((midi % 12) + 12) % 12;

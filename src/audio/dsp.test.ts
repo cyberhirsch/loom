@@ -2,8 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { DEFAULT_SCRIPT } from '../graph/defaultScript';
 import { parseLoomScript } from '../script/loomscript';
 import { computeContext, computeBasePattern, ROLE_OCTAVE } from '../graph/session';
-import { chordMidi } from '../theory/harmony';
-import { degreeToMidi } from '../theory/scales';
+import { eventMidis } from '../theory/harmony';
 import type { NoteEvent } from '../theory/melody';
 import type { ConductorState, PlayerData, PlayerKind, SynthData } from '../graph/types';
 import { partInstruments, ringingAt, simulateVoices, type ModelEvent, type VoiceKind } from './voiceModel';
@@ -185,7 +184,7 @@ function defaultWire(scaleId: ConductorState['scaleId']) {
     const pat = (computeBasePattern(kind as PlayerKind, ctx, data) as NoteEvent[]).slice().sort((a, b) => a.step - b.step);
     wire[kind] = pat.map((ev) => ({
       step: ev.step,
-      midis: kind === 'chords' ? chordMidi(ctx, ev.degree, oct) : [degreeToMidi(ctx.keyIndex, ctx.scaleId, ev.degree, oct)],
+      midis: eventMidis(ctx, kind, ev.degree, oct),
       vel: ev.velocity,
       lenSteps: ev.lengthSteps,
     }));

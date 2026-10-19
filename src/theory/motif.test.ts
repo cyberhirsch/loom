@@ -1,16 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { generateTheme, SHAPES, type Shape } from './motif';
-import { generateProgression, progressionToSteps, type HarmonicContext } from './harmony';
+import { buildContext, contextFromDegrees, type HarmonicContext } from './harmony';
 import { SCALES, SCALE_IDS, degreeToMidi, type ScaleId } from './scales';
 import { degreeSemis, scoreCandidates, withGlissando, type NoteEvent } from './melody';
 
 function ctxFor(steps: number, scaleId: ScaleId = 'minor_pent', chordSeed = 202): HarmonicContext {
-  return {
-    keyIndex: 0,
-    scaleId,
-    steps,
-    chordAtStep: progressionToSteps(generateProgression(chordSeed, scaleId), steps),
-  };
+  return buildContext(0, scaleId, steps, chordSeed);
 }
 
 const base = { seed: 101, density: 0.55, adventurousness: 0.35 };
@@ -243,7 +238,7 @@ describe('melody hotfixes: no climax fold, cadence exemption, semitone intervals
 
   it('the coach measures intervals in semitones: a tritone leap scores below an equally-placed 6th', () => {
     // lydian over the II chord (D F# A): from C, F# (tritone) and A (major 6th) are both chord-tone leaps
-    const ctx: HarmonicContext = { keyIndex: 0, scaleId: 'lydian', steps: 16, chordAtStep: new Array(16).fill(1) };
+    const ctx = contextFromDegrees(0, 'lydian', 16, [1]);
     const score = new Map(scoreCandidates(ctx, 5, 0, null, 0.35));
     expect(score.get(3)!).toBeLessThan(score.get(5)!);
   });

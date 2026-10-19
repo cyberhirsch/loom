@@ -6,11 +6,10 @@
  */
 
 import { useLoomStore, densityModulations } from '../graph/store';
-import { computeContext, computeBasePattern, kickStepsOf, motifForPlayer, ROLE_OCTAVE } from '../graph/session';
-import { degreeToMidi } from '../theory/scales';
-import { chordMidi, buildJourney, type HarmonicContext } from '../theory/harmony';
+import { contextFor, computeBasePattern, kickStepsOf, motifForPlayer, ROLE_OCTAVE } from '../graph/session';
+import { buildJourney, eventMidis, roleContext, roleScale, type HarmonicContext, type PitchedRole } from '../theory/harmony';
 import { evolveMelody, withGlissando, type NoteEvent } from '../theory/melody';
-import { computeEnergyCurve, energyScalar } from '../theory/energy';
+import { computeEnergyCurve, energyScalar, type PitchedPart } from '../theory/energy';
 import type { DrumEvent } from '../theory/parts';
 import type { ArrangerData, DelayData, ExpressionData, OutData, PlayerData, PlayerKind, ReverbData, SynthData } from '../graph/types';
 import type { Edge } from '@xyflow/react';
@@ -346,17 +345,16 @@ class WasmEngine {
     }
 
     const fresh = useLoomStore.getState();
-    const chordsNode = fresh.nodes.find((n) => n.type === 'chords');
-    const ctx = computeContext(fresh.conductor, chordsNode ? Number(chordsNode.data.seed) : 1);
+    const ctx = contextFor(fresh.conductor, fresh.nodes);
     const mods = densityModulations(nodes, edges);
 
     // ensemble energy of the previous loop (Tension CV source)
-    const pitched: NoteEvent[][] = [];
+    const pitched: PitchedPart[] = [];
     let drumEvents: DrumEvent[] | null = null;
     for (const node of fresh.nodes) {
       if (!PLAYER_KINDS.includes(node.type as PlayerKind) || !this.patterns.has(node.id)) continue;
       if (node.type === 'drums') drumEvents = this.patterns.get(node.id) as DrumEvent[];
-      else pitched.push(this.patterns.get(node.id) as NoteEvent[]);
+      else pitched.push({ role: node.type as PitchedRole, events: this.patterns.get(node.id) as NoteEvent[] });
     }
     if (this.hctx) {
       const curve = computeEnergyCurve(this.hctx, pitched, drumEvents);
@@ -399,7 +397,7 @@ class WasmEngine {
 
       const motif = kind === 'melody' ? motifForPlayer(fresh.nodes, edges, node.id) : null;
       const kickSteps = kind === 'bass' ? kicks : undefined;
-      const signature = JSON.stringify([kind, data.seed, effDensity, data.adventurousness, data.syncopation, data.register, data.articulation, ctx.keyIndex, ctx.scaleId, ctx.chordAtStep, motif, kickSteps]);
+      const signature = JSON.stringify([kind, data.seed, effDensity, data.adventurousness, data.syncopation, data.register, data.articulation, ctx.keyIndex, ctx.scaleId, ctx.colour, ctx.chords.map((c) => c.degree), ctx.chordIdxAtStep, motif, kickSteps]);
       const changed = signature !== this.signatures.get(node.id);
 
       if (fresh.conductor.evolveOn && !changed && this.patterns.has(node.id) && (kind === 'melody' || kind === 'arp' || kind === 'bass')) {
@@ -408,7 +406,7 @@ class WasmEngine {
         const evolved =
           kind === 'melody'
             ? (computeBasePattern(kind, ctx, data, { densityOverride: effDensity, motif, generation: ++this.evolveGeneration }) as NoteEvent[])
-            : evolveMelody(ctx, this.patterns.get(node.id) as NoteEvent[], Number(data.seed), ++this.evolveGeneration);
+            : evolveMelody(roleContext(ctx, kind), this.patterns.get(node.id) as NoteEvent[], Number(data.seed), ++this.evolveGeneration);
         this.patterns.set(node.id, evolved);
         fresh.publishPattern(node.id, evolved);
       } else if (changed || force || !this.patterns.has(node.id)) {
@@ -440,11 +438,11 @@ class WasmEngine {
         const octave = ROLE_OCTAVE[kind] + Number(node.data.register ?? 0);
         let events = [...(pattern as NoteEvent[])].sort((a, b) => a.step - b.step);
         if (route?.expression?.glissando && kind !== 'chords') {
-          events = withGlissando(events, ctx.scaleId);
+          events = withGlissando(events, roleScale(ctx, kind));
         }
         out[kind] = events.map((ev) => ({
           step: ev.step,
-          midis: kind === 'chords' ? chordMidi(ctx, ev.degree, octave) : [degreeToMidi(ctx.keyIndex, ctx.scaleId, ev.degree, octave)],
+          midis: eventMidis(ctx, kind, ev.degree, octave),
           vel: ev.velocity,
           lenSteps: ev.lengthSteps,
         }));

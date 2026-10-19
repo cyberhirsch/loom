@@ -1,7 +1,7 @@
 import { memo } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { useLoomStore } from '../../graph/store';
-import { computeContext, computeBasePattern, drumKicks } from '../../graph/session';
+import { contextFor, computeBasePattern, drumKicks } from '../../graph/session';
 import type { PlayerData, PlayerKind } from '../../graph/types';
 import { PatternPreview } from '../PatternPreview';
 
@@ -86,8 +86,7 @@ function PlayerNodeView({ id, type, selected }: NodeProps) {
                 update(id, { frozen: false });
               } else {
                 const s = useLoomStore.getState();
-                const chordsSeed = Number(s.nodes.find((n) => n.type === 'chords')?.data.seed ?? 1);
-                const ctx = computeContext(s.conductor, chordsSeed);
+                const ctx = contextFor(s.conductor, s.nodes);
                 const take =
                   s.patterns[id] ??
                   computeBasePattern(kind, ctx, data as unknown as PlayerData, {
@@ -116,6 +115,22 @@ function PlayerNodeView({ id, type, selected }: NodeProps) {
         {kind === 'melody' && <Slider id={id} field="adventurousness" label="adventure" />}
         {kind === 'drums' && <Slider id={id} field="syncopation" label="syncopate" />}
         {kind === 'bass' && <Slider id={id} field="articulation" label="legato" min={0.2} max={1} fallback={0.95} />}
+        {kind === 'chords' && (
+          <div className="node-row">
+            <label style={{ fontSize: 10, color: 'var(--muted)' }}>colour</label>
+            <select
+              className="nodrag"
+              value={String(data.colour ?? 'triad')}
+              onChange={(e) => update(id, { colour: e.target.value })}
+              aria-label="Chord colour"
+              title="How chords are built on their roots — the melody and arp follow the sounding chord"
+            >
+              <option value="triad">triads</option>
+              <option value="7th">7th chords</option>
+              <option value="quartal">quartal · stacked 4ths</option>
+            </select>
+          </div>
+        )}
         {kind !== 'drums' && (
           <Slider id={id} field="register" label="register" min={-2} max={2} step={1} format={(v) => (v > 0 ? `+${v}` : String(v))} />
         )}

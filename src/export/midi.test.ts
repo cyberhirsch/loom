@@ -1,16 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { buildMidi } from './midi';
-import { generateProgression, progressionToSteps, type HarmonicContext } from '../theory/harmony';
+import { buildContext, type HarmonicContext } from '../theory/harmony';
 import { generateMelody } from '../theory/melody';
 import { generateBass, generateDrums } from '../theory/parts';
 
 function ctx(): HarmonicContext {
-  return {
-    keyIndex: 0,
-    scaleId: 'ionian',
-    steps: 16,
-    chordAtStep: progressionToSteps(generateProgression(42, 'ionian'), 16),
-  };
+  return buildContext(0, 'ionian', 16, 42);
 }
 
 describe('MIDI export (PRD §6.10 / M4 slice)', () => {

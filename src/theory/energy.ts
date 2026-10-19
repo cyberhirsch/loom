@@ -4,28 +4,34 @@
  * In Loom it is a CV source, not just a display (PRD §5.2 modular payoff).
  */
 
-import { SCALES, isChordTone } from './scales';
-import type { HarmonicContext } from './harmony';
+import { SCALES, degreeToMidi, pcOf } from './scales';
+import { chordAt, roleScale, type HarmonicContext, type PitchedRole } from './harmony';
 import type { NoteEvent } from './melody';
 import type { DrumEvent } from './parts';
 
+export interface PitchedPart {
+  role: PitchedRole;
+  events: NoteEvent[];
+}
+
 export function computeEnergyCurve(
   ctx: HarmonicContext,
-  pitched: NoteEvent[][],
+  pitched: PitchedPart[],
   drums: DrumEvent[] | null,
 ): number[] {
-  const scaleLen = SCALES[ctx.scaleId].intervals.length;
   const curve = new Array<number>(ctx.steps).fill(0);
   let carry = 0;
   for (let s = 0; s < ctx.steps; s++) {
     let v = 0;
     let hit = false;
-    for (const events of pitched) {
+    for (const { role, events } of pitched) {
+      const scaleId = roleScale(ctx, role);
+      const scaleLen = SCALES[scaleId].intervals.length;
       for (const ev of events) {
         if (ev.step !== s) continue;
         hit = true;
         const height = Math.min(1, ev.degree / (scaleLen * 1.5));
-        const stable = isChordTone(ev.degree, ctx.chordAtStep[s], scaleLen);
+        const stable = chordAt(ctx, s).pcs.includes(pcOf(degreeToMidi(ctx.keyIndex, scaleId, ev.degree)));
         v += 0.4 + height * 0.6 + (stable ? 0.1 : 0.5);
       }
     }

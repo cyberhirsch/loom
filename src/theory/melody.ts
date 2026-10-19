@@ -5,8 +5,8 @@
  * perfect cadence on the root. Seeded and deterministic.
  */
 
-import { SCALES, degreeToMidi, isChordTone, type ScaleId } from './scales';
-import type { HarmonicContext } from './harmony';
+import { SCALES, degreeToMidi, type ScaleId } from './scales';
+import { isChordToneAt, type HarmonicContext } from './harmony';
 import { mulberry32, pickWeighted, type Rng } from './rng';
 
 /** Semitones above the tonic (key-independent): interval logic is measured in
@@ -71,7 +71,6 @@ export function scoreCandidates(
   const range = scaleLen + Math.ceil(scaleLen / 2); // ~1.5 octaves of degrees
   const role = phraseRole(step, ctx.steps);
   const fifth = fifthDegree(scaleLen, intervals);
-  const chordDeg = ctx.chordAtStep[step];
   const st = (d: number) => degreeSemis(ctx.scaleId, d);
   // a leap of a 5th or more wants recovery the other way
   const leap = last != null && prev != null && Math.abs(st(last) - st(prev)) >= 7;
@@ -81,7 +80,7 @@ export function scoreCandidates(
   const out: Array<[number, number]> = [];
   for (let d = 0; d < range; d++) {
     let score = 1;
-    const chordTone = isChordTone(d, chordDeg, scaleLen);
+    const chordTone = isChordToneAt(ctx, step, d);
     if (last != null) {
       const dist = Math.abs(st(d) - st(last));
       if (dist === 0) score += 14;
@@ -136,7 +135,9 @@ export function generateMelody(ctx: HarmonicContext, params: MelodyParams): Note
   }
   // guarantee an anchor: open on a chord tone if empty start
   if (!events.some((e) => e.step === 0)) {
-    events.unshift({ step: 0, degree: ctx.chordAtStep[0], velocity: 0.9, lengthSteps: 1 });
+    let degree = 0;
+    while (degree < SCALES[ctx.scaleId].intervals.length && !isChordToneAt(ctx, 0, degree)) degree++;
+    events.unshift({ step: 0, degree, velocity: 0.9, lengthSteps: 1 });
   }
   return events;
 }

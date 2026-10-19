@@ -13,6 +13,7 @@ export function PatternPreview({ id, kind }: { id: string; kind: PlayerKind }) {
   const published = useLoomStore((s) => s.patterns[id]);
   const conductor = useLoomStore((s) => s.conductor);
   const chordsSeed = useLoomStore((s) => Number(s.nodes.find((n) => n.type === 'chords')?.data.seed ?? 1));
+  const chordsColour = useLoomStore((s) => s.nodes.find((n) => n.type === 'chords')?.data.colour);
   const data = useLoomStore((s) => s.nodes.find((n) => n.id === id)?.data) as unknown as PlayerData | undefined;
   const currentStep = useLoomStore((s) => s.currentStep);
 
@@ -23,10 +24,10 @@ export function PatternPreview({ id, kind }: { id: string; kind: PlayerKind }) {
     if (data?.frozen && Array.isArray(data.frozenPattern)) return data.frozenPattern;
     if (published) return published;
     if (!data) return [];
-    const ctx = computeContext(conductor, chordsSeed);
+    const ctx = computeContext(conductor, chordsSeed, chordsColour);
     const kickSteps = drumsNode ? drumKicks([drumsNode], ctx) : undefined;
     return computeBasePattern(kind, ctx, data, { motif, kickSteps });
-  }, [published, conductor, chordsSeed, data, kind, motif, drumsNode]);
+  }, [published, conductor, chordsSeed, chordsColour, data, kind, motif, drumsNode]);
 
   const steps = Number(conductor.steps) || 16;
   const cw = W / steps;

@@ -1,5 +1,5 @@
 /**
- * LoomScript (v1) — the whole patch as text (PRD prerequisite, 2026-07-02):
+ * LoomScript (v2) — the whole patch as text (PRD prerequisite, 2026-07-02):
  * a line-based DSL readable and editable by humans and any LLM. This IS the
  * save format: the store persists script text and parses it back, so
  * round-trip fidelity is guaranteed by construction (and by tests).
@@ -10,7 +10,8 @@
 import type { Edge } from '@xyflow/react';
 import type { ConductorState, LoomNode, PlayerKind } from '../graph/types';
 import type { Scene } from '../graph/store';
-import { NOTE_NAMES, SCALES, type ScaleId } from '../theory/scales';
+import { NOTE_NAMES, SCALES, degreeToMidi, parentScale, type ScaleId } from '../theory/scales';
+import { CHORD_COLOURS, type ChordColour } from '../theory/harmony';
 import type { NoteEvent } from '../theory/melody';
 import type { DrumEvent } from '../theory/parts';
 
@@ -32,6 +33,8 @@ const PLAYER_KINDS: PlayerKind[] = ['melody', 'chords', 'bass', 'drums', 'arp'];
 const WAVES = ['sine', 'triangle', 'square', 'saw'];
 const DRUM_LANES = ['kick', 'snare', 'hat'];
 const DIVISION_NAMES: Record<number, string> = { 2: '1/8', 3: '1/8d', 4: '1/4' };
+/** the version this code writes; older documents are migrated on parse (see migrateV1) */
+export const LOOMSCRIPT_VERSION = 2;
 
 /** player param name ↔ data field (script names are the friendlier ones) */
 const PLAYER_PARAMS: Record<string, string> = {
@@ -67,6 +70,7 @@ function playerLine(n: LoomNode): string {
     if (param === 'artic' && n.type !== 'bass') continue;
     if (d[field] !== undefined) parts.push(`${param}=${round(Number(d[field]))}`);
   }
+  if (n.type === 'chords' && d.colour !== undefined) parts.push(`colour=${d.colour}`);
   return parts.join(' ') + pos(n);
 }
 
@@ -123,7 +127,7 @@ const ACCEPTS_SIGNAL = new Set(['delay', 'reverb', 'out']);
 export function serializeProject(p: { nodes: LoomNode[]; edges: Edge[]; conductor: ConductorState; scenes: Scene[] }): string {
   const { nodes, edges, conductor: c, scenes } = p;
   const byId = new Map(nodes.map((n) => [n.id, n]));
-  const lines: string[] = ['# Loom patch — LoomScript v1 (spec: docs/LOOMSCRIPT.md)', 'loom 1', ''];
+  const lines: string[] = [`# Loom patch — LoomScript v${LOOMSCRIPT_VERSION} (spec: docs/LOOMSCRIPT.md)`, `loom ${LOOMSCRIPT_VERSION}`, ''];
 
   const conductorNode = nodes.find((n) => n.type === 'conductor');
   lines.push(
@@ -367,6 +371,8 @@ export function parseLoomScript(text: string): ParseResult {
 
   let arrangerNode: LoomNode | null = null;
   const chainLines: Array<{ lineNo: number; text: string }> = [];
+  // a document without a header is read as the current version (hand- or LLM-written)
+  let version = LOOMSCRIPT_VERSION;
 
   const rawLines = text.split(/\r?\n/);
   for (let li = 0; li < rawLines.length; li++) {
@@ -380,7 +386,13 @@ export function parseLoomScript(text: string): ParseResult {
     const tokens = tokenize(line);
     const head = tokens[0];
 
-    if (head === 'loom') continue; // version header
+    if (head === 'loom') {
+      const v = parseNum(tokens[1] ?? '');
+      if (v === null || !Number.isInteger(v) || v < 1) errors.push({ line: lineNo, message: `version header must be "loom ${LOOMSCRIPT_VERSION}"` });
+      else if (v > LOOMSCRIPT_VERSION) errors.push({ line: lineNo, message: `this patch is LoomScript v${v}; this Loom reads up to v${LOOMSCRIPT_VERSION}` });
+      else version = v;
+      continue;
+    }
 
     // conductor / arranger / section / out / take / scene / players / id: type
     if (head === 'conductor') {
@@ -554,9 +566,16 @@ export function parseLoomScript(text: string): ParseResult {
       const data: Record<string, unknown> = { ...DEFAULT_PLAYER[kind] };
       const { kvs, at } = splitParams(tokens.slice(1), lineNo, errors);
       for (const { key, value } of kvs) {
+        if (key === 'colour' && kind === 'chords') {
+          if (!CHORD_COLOURS.includes(value as ChordColour))
+            errors.push({ line: lineNo, message: `colour must be ${CHORD_COLOURS.join('|')}, got "${value}"` });
+          else data.colour = value;
+          continue;
+        }
         const field = PLAYER_PARAMS[key];
         if (!field) {
-          errors.push({ line: lineNo, message: `${kind} has no param "${key}" (${Object.keys(PLAYER_PARAMS).join(', ')})` });
+          const known = [...Object.keys(PLAYER_PARAMS), ...(kind === 'chords' ? ['colour'] : [])];
+          errors.push({ line: lineNo, message: `${kind} has no param "${key}" (${known.join(', ')})` });
           continue;
         }
         if (field === 'mute') {
@@ -718,8 +737,31 @@ export function parseLoomScript(text: string): ParseResult {
   }
 
   if (errors.length) return { ok: false, errors };
+  if (version < 2) migrateV1(nodes, conductor);
   conductor.liveKeyIndex = conductor.keyIndex;
   conductor.liveScaleId = conductor.scaleId;
   conductor.journeyLabel = 'home';
   return { ok: true, project: { nodes, edges, conductor, scenes } };
+}
+
+/**
+ * v1 → v2: bass and chords takes count degrees in the parent mode (the key collection)
+ * since v2, the scale their real triads and fifths live in. A v1 take over a pentatonic
+ * home scale counted pentatonic degrees; each one is re-expressed as the parent degree of
+ * the same pitch, so the frozen bass line keeps its notes (a frozen chord take keeps its
+ * roots and now sounds their parent-mode triads).
+ */
+function migrateV1(nodes: LoomNode[], conductor: ConductorState) {
+  const from = conductor.scaleId;
+  const to = parentScale(from);
+  if (from === to) return;
+  const parentIv = SCALES[to].intervals;
+  for (const n of nodes) {
+    if ((n.type !== 'bass' && n.type !== 'chords') || !Array.isArray(n.data.frozenPattern)) continue;
+    n.data.frozenPattern = (n.data.frozenPattern as NoteEvent[]).map((e) => {
+      const semis = degreeToMidi(0, from, e.degree) - 60;
+      const pc = ((semis % 12) + 12) % 12;
+      return { ...e, degree: parentIv.indexOf(pc) + parentIv.length * Math.floor(semis / 12) };
+    });
+  }
 }

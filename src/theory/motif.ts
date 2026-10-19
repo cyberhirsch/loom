@@ -12,8 +12,8 @@
  * Everything is seeded and deterministic, like the rest of the theory core.
  */
 
-import { SCALES, isChordTone, type ScaleId } from './scales';
-import type { HarmonicContext } from './harmony';
+import { SCALES, type ScaleId } from './scales';
+import { isChordToneAt, type HarmonicContext } from './harmony';
 import { mulberry32, pickWeighted, type Rng } from './rng';
 import { degreeSemis, isTritone, resolvesInward, scoreCandidates, type NoteEvent } from './melody';
 
@@ -88,21 +88,6 @@ function planFor(cells: number): CellRole[] {
   return ['A', 'Aseq', 'B', 'half', 'A', 'Aseq', 'B', 'cad'];
 }
 
-function nearestChordTone(degree: number, chordDeg: number, scaleLen: number): number {
-  for (let dist = 0; dist <= scaleLen; dist++) {
-    for (const dir of [0, -1, 1]) {
-      const d = degree + dist * dir;
-      if (d >= 0 && isChordTone(d, chordDeg, scaleLen)) return d;
-    }
-  }
-  return degree;
-}
-
-function nextChordTone(from: number, dir: number, chordDeg: number, scaleLen: number, range: number): number | null {
-  for (let d = from + dir; d >= 0 && d < range; d += dir) if (isChordTone(d, chordDeg, scaleLen)) return d;
-  return null;
-}
-
 /** Longest run of one repeated pitch. */
 function longestRun(degrees: number[]): number {
   let best = degrees.length ? 1 : 0;
@@ -156,7 +141,26 @@ function buildTheme(ctx: HarmonicContext, params: ThemeParams, takeSeed: number)
     return 26 * Math.max(0, 1 - Math.abs(d - target) / (range * 0.55));
   };
   const st = (d: number) => degreeSemis(scaleId, d);
-  const chordAt = (step: number) => ctx.chordAtStep[Math.min(ctx.steps - 1, step)];
+  /** is degree d a tone of the chord sounding at `step` (pitch-class membership) */
+  const ct = (step: number, d: number) => isChordToneAt(ctx, step, d);
+  /** the chord tone nearest `degree` in semitones, inside the melody range (ties go down) */
+  const nearestChordTone = (step: number, degree: number): number => {
+    let best = degree;
+    let bestDist = Infinity;
+    for (let d = 0; d < range; d++) {
+      if (!ct(step, d)) continue;
+      const dist = Math.abs(st(d) - st(degree));
+      if (dist < bestDist) {
+        best = d;
+        bestDist = dist;
+      }
+    }
+    return best;
+  };
+  const nextChordTone = (step: number, from: number, dir: number): number | null => {
+    for (let d = from + dir; d >= 0 && d < range; d += dir) if (ct(step, d)) return d;
+    return null;
+  };
   const cellStart = (i: number) => i * CELL;
 
   const line: number[] = []; // degrees emitted so far, in time order
@@ -222,7 +226,7 @@ function buildTheme(ctx: HarmonicContext, params: ThemeParams, takeSeed: number)
     if (plan[ci] !== 'A') {
       rhythm.forEach((o, oi) => {
         const step = cellStart(ci) + o.offset;
-        if (step % CELL === 0 && !isChordTone(degs[oi], chordAt(step), scaleLen)) c += 0.25;
+        if (step % CELL === 0 && !ct(step, degs[oi])) c += 0.25;
       });
     }
     return c;
@@ -288,7 +292,7 @@ function buildTheme(ctx: HarmonicContext, params: ThemeParams, takeSeed: number)
   // the final), or a skip of a third — the take decides among the ones that keep the line clean
   const approachOptions = (
     landing: number,
-    chordDeg: number,
+    chordStep: number,
     home: boolean,
     hiExcl: number,
     last: number | null,
@@ -297,6 +301,11 @@ function buildTheme(ctx: HarmonicContext, params: ThemeParams, takeSeed: number)
     const fifth = SCALES[scaleId].intervals.indexOf(7);
     const weight = new Map<number, number>([[landing + 1, 10], [landing - 1, 10], [landing + 2, 4], [landing - 2, 4]]);
     if (home && fifth > 0) weight.set(landing - (scaleLen - fifth), 8);
+    // a tone of the chord under the approach, up to a fifth from the landing (the 3rd of IV, the leading tone of V)
+    for (let a = landing - 4; a <= landing + 4; a++) {
+      const gap = Math.abs(st(a) - st(landing));
+      if (a !== landing && gap <= 7 && !weight.has(a) && ct(chordStep, a)) weight.set(a, 6);
+    }
     const opts: Array<[number, number]> = [];
     for (const [a, base] of weight) {
       if (a < 0 || a >= hiExcl) continue;
@@ -305,19 +314,19 @@ function buildTheme(ctx: HarmonicContext, params: ThemeParams, takeSeed: number)
       if (last !== null && prev !== null && isTritone(scaleId, prev, last) && !resolvesInward(scaleId, prev, last, a)) continue;
       if (last !== null && isTritone(scaleId, last, a) && !resolvesInward(scaleId, last, a, landing)) continue;
       if (last !== null && Math.abs(st(a) - st(last)) > 7) continue;
-      let w = base;
-      if (isChordTone(a, chordDeg, scaleLen)) w += 2;
+      // the approach falls on the cadence cell's downbeat: a tone of the chord there, else a lighter appoggiatura
+      let w = ct(chordStep, a) ? base + 6 : base * 0.4;
       if (last !== null && Math.abs(st(a) - st(last)) < 5) w += 3;
       opts.push([a, w]);
     }
     return opts;
   };
-  const pickApproach = (landing: number, chordDeg: number, home: boolean): number => {
+  const pickApproach = (landing: number, chordStep: number, home: boolean): number => {
     const last = line.length ? line[line.length - 1] : null;
     const prev = line.length > 1 ? line[line.length - 2] : null;
     // under the climax when possible; a low peak (a one-note motif) may have no room below it
-    const opts = approachOptions(landing, chordDeg, home, Math.min(range, ceiling), last, prev);
-    const any = opts.length ? opts : approachOptions(landing, chordDeg, home, range, last, prev);
+    const opts = approachOptions(landing, chordStep, home, Math.min(range, ceiling), last, prev);
+    const any = opts.length ? opts : approachOptions(landing, chordStep, home, range, last, prev);
     if (any.length) return pickWeighted(rngTake, any);
     return landing > 0 ? landing - 1 : landing + 1;
   };
@@ -338,7 +347,7 @@ function buildTheme(ctx: HarmonicContext, params: ThemeParams, takeSeed: number)
   const roomUnder = (ci: number, rhythm: Onset[], degs: number[]): number[] => {
     const next = plan[ci + 1];
     if (next !== 'cad' && next !== 'half') return degs;
-    const chordNext = chordAt(cellStart(ci + 1));
+    const chordNext = cellStart(ci + 1);
     const fits = (c: number[]) => {
       const top = Math.max(...c);
       const landing = cadenceLanding(next, c[c.length - 1], top);
@@ -346,7 +355,7 @@ function buildTheme(ctx: HarmonicContext, params: ThemeParams, takeSeed: number)
       return approachOptions(landing, chordNext, next === 'cad', top, c[c.length - 1], c.length > 1 ? c[c.length - 2] : null).length > 0;
     };
     const strongOk = (c: number[]) =>
-      rhythm.every((o, oi) => o.offset !== 0 || !isChordTone(degs[oi], chordAt(cellStart(ci)), scaleLen) || isChordTone(c[oi], chordAt(cellStart(ci)), scaleLen));
+      rhythm.every((o, oi) => o.offset !== 0 || !ct(cellStart(ci), degs[oi]) || ct(cellStart(ci), c[oi]));
     const shifts: number[][] = [];
     for (let t = 0; Math.max(...degs) + t < range; t++) shifts.push(degs.map((d) => d + t));
     return shifts.find((c) => fits(c) && strongOk(c)) ?? shifts.find(fits) ?? degs;
@@ -369,7 +378,7 @@ function buildTheme(ctx: HarmonicContext, params: ThemeParams, takeSeed: number)
 
   for (let ci = 0; ci < cellCount; ci++) {
     const role = plan[ci];
-    const chordDeg = chordAt(cellStart(ci));
+    const chordStep = cellStart(ci);
     const climax = ci === climaxCell;
     if (role === 'A' || role === 'Aseq' || role === 'B') {
       const rhythm = role === 'B' ? rhythmB : rhythmA;
@@ -386,8 +395,8 @@ function buildTheme(ctx: HarmonicContext, params: ThemeParams, takeSeed: number)
         let shift = seqDir;
         if (rhythmA[0].offset === 0) {
           const a0 = aDegrees[0];
-          let snapped = nearestChordTone(a0 + seqDir, chordDeg, scaleLen);
-          if (snapped === a0) snapped = nextChordTone(a0, seqDir, chordDeg, scaleLen, range) ?? a0 + seqDir;
+          let snapped = nearestChordTone(chordStep, a0 + seqDir);
+          if (snapped === a0) snapped = nextChordTone(chordStep, a0, seqDir) ?? a0 + seqDir;
           shift = snapped - a0;
         }
         degs = fit(ci, rhythm, aDegrees.map((d) => d + shift), hiExcl, RESTATE, (c) => c.every((d, i) => d === aDegrees[i]));
@@ -396,7 +405,7 @@ function buildTheme(ctx: HarmonicContext, params: ThemeParams, takeSeed: number)
         const pivot = aDegrees[0];
         const raw = rhythm.map((o, oi) => {
           const inv = 2 * pivot - aDegrees[oi % aDegrees.length] + (rngTake() < 0.25 ? seqDir : 0);
-          return (cellStart(ci) + o.offset) % CELL === 0 ? nearestChordTone(inv, chordDeg, scaleLen) : inv;
+          return (cellStart(ci) + o.offset) % CELL === 0 ? nearestChordTone(chordStep, inv) : inv;
         });
         degs = climax ? fitClimax(ci, rhythm, raw) : fit(ci, rhythm, raw, hiExcl, RESTATE);
       } else {
@@ -425,7 +434,7 @@ function buildTheme(ctx: HarmonicContext, params: ThemeParams, takeSeed: number)
     } else {
       // cadence cell: approach note then a held landing
       const landing = cadenceLanding(role, line.length ? line[line.length - 1] : scaleLen, ceiling);
-      emit(ci, rhythmCad, [pickApproach(landing, chordDeg, role === 'cad'), landing]);
+      emit(ci, rhythmCad, [pickApproach(landing, chordStep, role === 'cad'), landing]);
       const landed = events[events.length - 1];
       if (landed) landed.lengthSteps = ci === cellCount - 1 ? Math.max(2, ctx.steps - (cellStart(ci) + 2)) : 2;
     }
@@ -528,8 +537,10 @@ function criticScore(ctx: HarmonicContext, events: NoteEvent[], rhythmMatchTarge
   const plan = planFor(Math.max(2, Math.floor(ctx.steps / CELL)));
   const isCadence = (step: number) => plan[Math.floor(step / CELL)] === 'half' || plan[Math.floor(step / CELL)] === 'cad';
   const strong = events.filter((e) => e.step % CELL === 0 && !isCadence(e.step));
-  const inChord = strong.filter((e) => isChordTone(e.degree, ctx.chordAtStep[e.step], scaleLen)).length;
+  const inChord = strong.filter((e) => isChordToneAt(ctx, e.step, e.degree)).length;
   score += 26 * (strong.length ? inChord / strong.length : 0);
+  // ...though an approach that is a tone of the chord under it is the smoother cadence
+  for (const e of events) if (e.step % CELL === 0 && isCadence(e.step) && isChordToneAt(ctx, e.step, e.degree)) score += 6;
 
   // singable flow: mostly steps and thirds (under a 4th), some variety, no monotone.
   // Moves into the cadence notes are the cadence vocabulary's choice, not the flow's.

@@ -1,9 +1,9 @@
 /** Bass, Chords, Arp generators — followers of the harmonic context (PRD §5.2). */
 
-import type { HarmonicContext } from './harmony';
+import { chordAt, chordSemis, isChangeAt, type HarmonicContext } from './harmony';
 import { mulberry32, pickWeighted } from './rng';
 import type { NoteEvent } from './melody';
-import { SCALES } from './scales';
+import { SCALES, parentScale, pcOf, scalePcs } from './scales';
 
 export interface PartParams {
   seed: number;
@@ -22,19 +22,18 @@ export interface BassParams extends PartParams {
 const BASS_LOW = -5;
 const BASS_HIGH = 12;
 
-const isChangeAt = (ctx: HarmonicContext, s: number) => s === 0 || ctx.chordAtStep[s] !== ctx.chordAtStep[s - 1];
-
 /**
- * Bass: monophonic foundation. The chord root always lands on step 0 and on
- * every chord change; density only adds the notes in between (weighted onto
- * the kick when kickSteps are given) and a diatonic approach tone, inside the
- * bass range, on the 16th before each change. Every pitch is fixed by the
- * root chain, not by which other notes fired, so raising density only adds
- * notes.
+ * Bass: monophonic foundation, in parent-mode degrees (the key collection). The
+ * chord root always lands on step 0 and on every chord change; density only adds
+ * the notes in between (weighted onto the kick when kickSteps hold any kick): the
+ * root, the chord's perfect fifth (its next tone when it has none) and the octave,
+ * plus a diatonic approach tone, inside the bass range, on the 16th before each
+ * change. Every pitch is fixed by the root chain, not by which other notes fired,
+ * so raising density only adds notes.
  */
 export function generateBass(ctx: HarmonicContext, params: BassParams): NoteEvent[] {
   const rng = mulberry32(params.seed);
-  const iv = SCALES[ctx.scaleId].intervals;
+  const iv = SCALES[parentScale(ctx.scaleId)].intervals;
   const len = iv.length;
   const semis = (deg: number) => iv[((deg % len) + len) % len] + 12 * Math.floor(deg / len);
   const inRange = (deg: number) => semis(deg) >= BASS_LOW && semis(deg) <= BASS_HIGH;
@@ -47,7 +46,7 @@ export function generateBass(ctx: HarmonicContext, params: BassParams): NoteEven
     }
     return best;
   };
-  const kicks = params.kickSteps ? new Set(params.kickSteps) : null;
+  const kicks = params.kickSteps?.length ? new Set(params.kickSteps) : null;
   const d = params.density;
   const steps = ctx.steps;
 
@@ -55,9 +54,14 @@ export function generateBass(ctx: HarmonicContext, params: BassParams): NoteEven
   const segStarts: number[] = [];
   for (let s = 0; s < steps; s++) if (isChangeAt(ctx, s)) segStarts.push(s);
   const roots: number[] = [];
+  const fifthStep: number[] = [];
   for (const s of segStarts) {
-    const chord = ctx.chordAtStep[s];
-    roots.push(roots.length ? place(chord, semis(roots[roots.length - 1])) : ((chord % len) + len) % len);
+    const chord = chordAt(ctx, s);
+    roots.push(roots.length ? place(chord.degree, semis(roots[roots.length - 1])) : chord.degree);
+    // the perfect fifth when the chord has one, else the chord's next tone above the root
+    const tones = chordSemis(ctx.scaleId, chord.degree, ctx.colour);
+    const fifth = tones.find((t) => t - tones[0] === 7) ?? tones[1];
+    fifthStep.push(iv.indexOf(pcOf(fifth)) - chord.degree);
   }
   const segOf = (s: number) => {
     let i = 0;
@@ -85,7 +89,7 @@ export function generateBass(ctx: HarmonicContext, params: BassParams): NoteEven
       if (rOn >= pApproach) continue;
       // diatonic neighbour of the next root; the other side when the seeded one would leap past an octave
       const order = rPick < 0.5 ? [next - 1, next + 1] : [next + 1, next - 1];
-      const segNotes = segmentNotes(root, next);
+      const segNotes = segmentNotes(seg, root, next);
       const fit = order.find((a) => inRange(a) && segNotes.every((x) => x === undefined || near(a, x)));
       if (fit !== undefined) onsets.push({ step: s, degree: fit, velocity: 0.7, passing: true });
       continue;
@@ -93,7 +97,7 @@ export function generateBass(ctx: HarmonicContext, params: BassParams): NoteEven
     let p = (s % 4 === 0 ? 0.6 : s % 2 === 0 ? 0.3 : 0.12) * (0.3 + 0.9 * d);
     if (kicks) p *= kicks.has(s) ? 1.8 : 0.35;
     if (rOn >= Math.min(1, p)) continue;
-    const [fifth, octave] = segmentNotes(root, next).slice(1);
+    const [fifth, octave] = segmentNotes(seg, root, next).slice(1);
     const pick = pickWeighted(() => rPick, [
       [root, 5],
       [fifth ?? root, fifth === undefined ? 0 : 1.6],
@@ -103,10 +107,9 @@ export function generateBass(ctx: HarmonicContext, params: BassParams): NoteEven
   }
 
   /** root, then the fifth and octave when they fit the range and stay within an octave of the next root */
-  function segmentNotes(root: number, next: number): [number, number | undefined, number | undefined] {
-    const top = root + 4;
-    const tritone = semis(top) - semis(root) === 6; // diminished chord: no fifth
-    const fifth = tritone ? undefined : [top, top - len].find((x) => inRange(x) && near(x, next));
+  function segmentNotes(seg: number, root: number, next: number): [number, number | undefined, number | undefined] {
+    const top = root + ((fifthStep[seg] % len) + len) % len;
+    const fifth = [top, top - len].find((x) => inRange(x) && near(x, next));
     const octave = [root + len, root - len].find((x) => inRange(x) && near(x, next) && (fifth === undefined || near(x, fifth)));
     return [root, fifth, octave];
   }
@@ -120,40 +123,59 @@ export function generateBass(ctx: HarmonicContext, params: BassParams): NoteEven
   });
 }
 
-/** Chords: comping — a triad struck on every chord change plus occasional pushes, each held no further than the next change. */
+/** Chords: comping — the chord struck on every change plus occasional pushes, each held no further
+ *  than the next change. degree = the chord's root in the parent mode; tones come from the context's colour. */
 export function generateChords(ctx: HarmonicContext, params: PartParams): NoteEvent[] {
   const rng = mulberry32(params.seed);
-  const events: NoteEvent[] = []; // degree = chord root degree; voicing resolved at playback
+  const events: NoteEvent[] = [];
   for (let s = 0; s < ctx.steps; s++) {
-    const chord = ctx.chordAtStep[s];
+    const slot = ctx.chordIdxAtStep[s];
     const isChange = isChangeAt(ctx, s);
     const p = isChange ? 1 : s % 8 === 4 ? 0.25 + params.density * 0.5 : params.density * 0.12;
     if (rng() >= p) continue;
     let len = 1;
-    for (let k = s + 1; k < ctx.steps && ctx.chordAtStep[k] === chord && k - s < 8; k++) len = k - s + 1;
+    for (let k = s + 1; k < ctx.steps && ctx.chordIdxAtStep[k] === slot && k - s < 8; k++) len = k - s + 1;
     const prev = events[events.length - 1];
     if (prev) prev.lengthSteps = Math.min(prev.lengthSteps, s - prev.step);
-    events.push({ step: s, degree: chord, velocity: isChange ? 0.8 : 0.6, lengthSteps: len });
+    events.push({ step: s, degree: chordAt(ctx, s).degree, velocity: isChange ? 0.8 : 0.6, lengthSteps: len });
   }
   return events;
 }
 
-/** Arp: runs over the current chord's tones, direction-seeded, ornament density. */
+/** Arp patterns as indices into the chord tones it plays (root first, ascending); an index past the last tone wraps an octave up. */
+const ARP_PATTERNS: Array<[number[], number]> = [
+  [[0, 1, 2, 3], 2], // up
+  [[3, 2, 1, 0], 1], // down
+  [[0, 2, 1, 3], 1.2], // skip
+  [[0, 1, 2, 1], 1.4], // up-back
+];
+
+/** Arp: runs over the current chord's tones, direction-seeded, ornament density. It plays only the
+ *  chord tones inside the live scale (a pentatonic filter drops the parent-mode ones, which the
+ *  pad still sounds), so it stays in the melody's note set and never rubs against the chord; its
+ *  degrees are live-scale degrees. */
 export function generateArp(ctx: HarmonicContext, params: PartParams): NoteEvent[] {
   const rng = mulberry32(params.seed);
   const events: NoteEvent[] = [];
-  const pattern = pickWeighted(rng, [
-    [[0, 2, 4, 7], 2], // up
-    [[7, 4, 2, 0], 1], // down
-    [[0, 4, 2, 7], 1.2], // skip
-    [[0, 2, 4, 2], 1.4], // up-back
-  ] as Array<[number[], number]>);
+  const pattern = pickWeighted(rng, ARP_PATTERNS);
+  const iv = SCALES[ctx.scaleId].intervals;
+  const len = iv.length;
+  const filter = new Set(scalePcs(0, ctx.scaleId));
+  /** semitones above the tonic (a filter tone) → live-scale degree */
+  const toDegree = (t: number) => iv.indexOf(pcOf(t)) + len * Math.floor(t / 12);
   for (let s = 0; s < ctx.steps; s++) {
     const p = (0.2 + params.density * 0.85) * (s % 2 === 0 ? 1 : 0.75);
     if (rng() >= p) continue;
-    const chord = ctx.chordAtStep[s];
-    const offset = pattern[s % pattern.length];
-    events.push({ step: s, degree: chord + offset, velocity: 0.55 + (s % 4 === 0 ? 0.2 : 0), lengthSteps: 1 });
+    const all = chordSemis(ctx.scaleId, chordAt(ctx, s).degree, ctx.colour);
+    let tones = all.filter((t) => filter.has(pcOf(t)));
+    // every palette chord keeps two filter tones; a frozen or foreign root falls back to its nearest one
+    if (!tones.length) tones = [[0, -1, 1, -2, 2].map((d) => all[0] + d).find((t) => filter.has(pcOf(t)))!];
+    // with the root dropped, the run starts in the root's octave rather than one above
+    const base = 12 * Math.floor(tones[0] / 12);
+    tones = tones.map((t) => t - base);
+    const k = pattern[s % pattern.length];
+    const t = tones[k % tones.length] + 12 * Math.floor(k / tones.length);
+    events.push({ step: s, degree: toDegree(t), velocity: 0.55 + (s % 4 === 0 ? 0.2 : 0), lengthSteps: 1 });
   }
   return events;
 }

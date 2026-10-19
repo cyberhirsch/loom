@@ -4,22 +4,27 @@
  * Harmony-first (PRD §5.2): the Chords player's seed drives the progression.
  */
 
-import { generateProgression, progressionToSteps, type HarmonicContext } from '../theory/harmony';
+import { buildContext, CHORD_COLOURS, type ChordColour, type HarmonicContext } from '../theory/harmony';
 import type { NoteEvent } from '../theory/melody';
 import { generateTheme, type Shape } from '../theory/motif';
 import { generateArp, generateBass, generateChords, generateDrums, type DrumEvent } from '../theory/parts';
 import type { ConductorState, LoomNode, MotifData, PlayerData, PlayerKind } from './types';
 import type { Edge } from '@xyflow/react';
 
-export function computeContext(conductor: ConductorState, chordsSeed: number): HarmonicContext {
+export function computeContext(conductor: ConductorState, chordsSeed: number, colour?: unknown): HarmonicContext {
   const steps = Number(conductor.steps) || 16;
-  const prog = generateProgression(chordsSeed, conductor.liveScaleId);
-  return {
-    keyIndex: conductor.liveKeyIndex,
-    scaleId: conductor.liveScaleId,
-    steps,
-    chordAtStep: progressionToSteps(prog, steps),
-  };
+  return buildContext(conductor.liveKeyIndex, conductor.liveScaleId, steps, chordsSeed, chordColourOf(colour));
+}
+
+/** A Chords node's colour, falling back to plain triads for absent or unknown values. */
+export function chordColourOf(colour: unknown): ChordColour {
+  return CHORD_COLOURS.includes(colour as ChordColour) ? (colour as ChordColour) : 'triad';
+}
+
+/** The patch's harmonic context: its Chords node's seed and colour drive the shared progression. */
+export function contextFor(conductor: ConductorState, nodes: LoomNode[]): HarmonicContext {
+  const chords = nodes.find((n) => n.type === 'chords');
+  return computeContext(conductor, chords ? Number(chords.data.seed) : 1, chords?.data.colour);
 }
 
 /** The Motif node feeding a player's motif input, if any (PRD §5.2 expose-on-demand). */

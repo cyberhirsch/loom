@@ -4,8 +4,7 @@
  */
 
 import type { HarmonicContext } from '../theory/harmony';
-import { chordMidi } from '../theory/harmony';
-import { degreeToMidi } from '../theory/scales';
+import { eventMidis } from '../theory/harmony';
 import type { NoteEvent } from '../theory/melody';
 import type { DrumEvent } from '../theory/parts';
 import type { PlayerKind } from '../graph/types';
@@ -88,10 +87,7 @@ export function buildMidi(ctx: HarmonicContext, parts: MidiPart[], bpm: number, 
         const octave = ROLE_OCTAVE[part.kind] + part.register;
         for (const ev of part.pattern as NoteEvent[]) {
           const tick = base + ev.step * TICKS_PER_STEP;
-          const midis =
-            part.kind === 'chords'
-              ? chordMidi(ctx, ev.degree, octave)
-              : [degreeToMidi(ctx.keyIndex, ctx.scaleId, ev.degree, octave)];
+          const midis = eventMidis(ctx, part.kind, ev.degree, octave);
           const vel = Math.round(ev.velocity * 127) & 0x7f;
           // lengths can be fractional (bass articulation); SMF deltas are integers
           const durTicks = Math.max(1, Math.round(ev.lengthSteps * TICKS_PER_STEP) - 4);

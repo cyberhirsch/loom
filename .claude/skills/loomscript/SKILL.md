@@ -19,7 +19,8 @@ LoomScript is Loom's save format: the entire patch as a line-based DSL. The cano
 - Players are singletons declared by role name (`melody`, `chords`, `bass`, `drums`, `arp`). Everything else is `id: type params`.
 - Omit `@ x,y` positions — the parser auto-lays-out the canvas.
 - Determinism: same seeds = same music. To change one part's take, change only its `seed`.
-- `chords.seed` drives the shared chord progression (harmony-first) — changing it re-harmonizes everyone.
+- `chords.seed` drives the shared chord progression (harmony-first) — changing it re-harmonizes everyone. `chords colour=triad|7th|quartal` (optional) sets how every chord is built; melody and arp follow the sounding chord.
+- Start every script with `loom 2`. In `take` lines, bass and chords degrees count in the parent mode of the scale (`minor_pent` → `aeolian`, `major_pent` → `ionian`); melody and arp degrees count in the scale itself.
 - Motifs drive melody quality: `motif1: motif idea=INT shape=SHAPE` + `motif1 -> melody.motif` pins the rhythm cell and contour. Without a motif, melody is random; with one, it's thematic.
 
 ## Musical guidance
@@ -27,7 +28,8 @@ LoomScript is Loom's save format: the entire patch as a line-based DSL. The cano
 - **Phrase length**: `phrase=8` for tight 2-bar loops, `phrase=16` for standard 4-bar phrases (default), `phrase=32` for 8-bar question/answer structures.
 - **Melody themes**: always add `motif1: motif` and `motif1 -> melody.motif` for memorable melodies. Shapes: `arch` (peak early), `rise` (climb), `fall` (descent), `wave` (swell twice).
 - Densities: sparse 0.2–0.35, normal 0.45–0.6, driving 0.7–0.9. Mixing levels: melody ≈ -9, pad ≈ -16, bass ≈ -10, drums ≈ -8, arp ≈ -14 dB.
-- Mood via scale: `lydian` floating/hopeful, `dorian` warm minor, `aeolian` sad/cinematic, `minor_pent` bluesy/safe, `phrygian` dark/tense.
+- Mood via scale: `lydian` floating/hopeful, `dorian` warm minor, `aeolian` sad/cinematic, `minor_pent` bluesy/safe, `phrygian` dark/tense. Pentatonic scales keep the tune on five notes but harmonize with real parent-mode triads (C minor pent: Cm, Eb, Fm, Gm, Ab, Bb). Each mode cadences its own way (lydian II–I, phrygian bII–i, mixolydian/aeolian bVII–I/i, dorian IV–i).
+- Chord colour: `7th` suits lo-fi and jazz, `quartal` gives open modal pads (the old pentatonic stacked-fourths sound).
 - Give a patch shape with `arranger on` + sections (intensity 0.5 → 1.3 arc, `journey=1` on the peak section).
 - Slides: `expression` node with `portamento` (glide) and `glissando=on` (scale-locked runs into leaps of 3+ degrees).
 - Verify your edit round-trips: `npm test` runs the LoomScript parser/serializer suite (`src/script/script.test.ts`).

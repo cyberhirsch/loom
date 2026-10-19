@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { parseLoomScript, serializeProject } from './loomscript';
+import { LOOMSCRIPT_VERSION, parseLoomScript, serializeProject } from './loomscript';
+import { degreeToMidi, parentScale, SCALE_IDS } from '../theory/scales';
 import { DEFAULT_SCRIPT } from '../graph/store';
 
 function parseOrThrow(text: string) {
@@ -209,5 +210,91 @@ melody -> lead -> out
       { name: 'groove', loops: 4, intensity: 0.8, journeyStop: -1 },
       { name: 'peak', loops: 2, intensity: 1.3, journeyStop: 1 },
     ]);
+  });
+
+
+  it('chords colour is optional: old chords lines stay byte-identical, the new key round-trips, bad values are rejected', () => {
+    const oldLine = 'chords seed=202 density=0.5 register=0 volume=-16 @ 700,270';
+    const pOld = parseOrThrow(oldLine);
+    expect('colour' in pOld.nodes[0].data).toBe(false);
+    expect(serializeProject(pOld).split('\n')).toContain(oldLine);
+    for (const colour of ['triad', '7th', 'quartal']) {
+      const line = `chords seed=202 density=0.5 register=0 volume=-16 colour=${colour} @ 700,270`;
+      const p = parseOrThrow(line);
+      expect(p.nodes[0].data.colour).toBe(colour);
+      expect(serializeProject(p).split('\n')).toContain(line);
+    }
+    const bad = parseLoomScript('chords colour=jazz');
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.errors[0].message).toContain('triad|7th|quartal');
+    expect(parseLoomScript('melody colour=quartal').ok).toBe(false);
+  });
+
+  it(`writes LoomScript v${LOOMSCRIPT_VERSION}, refuses newer documents, and v2 parse∘serialize is the identity`, () => {
+    const text = serializeProject(parseOrThrow(DEFAULT_SCRIPT));
+    expect(text.split('\n')[1]).toBe(`loom ${LOOMSCRIPT_VERSION}`);
+    const v2 = [
+      'loom 2',
+      'conductor key=C scale=minor_pent tempo=102 phrase=16',
+      'bass seed=303',
+      'take bass 0:0:0.95:4 4:5:0.7:2 8:-1:0.8:4',
+      'chords seed=202 colour=quartal',
+      'take chords 0:0:0.8:4 4:5:0.8:4',
+      'sub: synth',
+      'pad: synth',
+      'bass -> sub -> out',
+      'chords -> pad -> out',
+    ].join('\n');
+    const once = serializeProject(parseOrThrow(v2));
+    expect(serializeProject(parseOrThrow(once))).toBe(once);
+    // v2 takes are read verbatim (no migration)
+    expect(parseOrThrow(v2).nodes.find((n) => n.type === 'bass')!.data.frozenPattern).toEqual([
+      { step: 0, degree: 0, velocity: 0.95, lengthSteps: 4 },
+      { step: 4, degree: 5, velocity: 0.7, lengthSteps: 2 },
+      { step: 8, degree: -1, velocity: 0.8, lengthSteps: 4 },
+    ]);
+    const newer = parseLoomScript(`loom ${LOOMSCRIPT_VERSION + 1}\nmelody seed=1`);
+    expect(newer.ok).toBe(false);
+    if (!newer.ok) expect(newer.errors[0].message).toContain(`v${LOOMSCRIPT_VERSION + 1}`);
+  });
+
+  it('v1 migration: pentatonic bass/chords takes move to parent-mode degrees of the same pitches, deterministically', () => {
+    for (const scaleId of SCALE_IDS) {
+      const v1 = [
+        'loom 1',
+        `conductor key=D scale=${scaleId} tempo=90 phrase=16`,
+        'melody seed=1',
+        'take melody 0:2:0.9:2 4:4:0.7:2',
+        'bass seed=3',
+        'take bass 0:0:0.95:3 3:-1:0.7:1 4:2:0.8:4 8:4:0.8:4 12:7:0.8:4',
+        'chords seed=2',
+        'take chords 0:0:0.8:4 4:3:0.8:4 8:4:0.8:8',
+        'lead: synth',
+        'sub: synth',
+        'pad: synth',
+        'melody -> lead -> out',
+        'bass -> sub -> out',
+        'chords -> pad -> out',
+      ].join('\n');
+      const a = parseOrThrow(v1);
+      expect(parseOrThrow(v1)).toEqual(a);
+      const parent = parentScale(scaleId);
+      const unmigrated = parseOrThrow(v1.replace('loom 1', 'loom 2'));
+      for (const kind of ['bass', 'chords']) {
+        const before = unmigrated.nodes.find((n) => n.type === kind)!.data.frozenPattern as Array<{ degree: number }>;
+        const after = a.nodes.find((n) => n.type === kind)!.data.frozenPattern as Array<{ degree: number }>;
+        after.forEach((e, i) => expect(degreeToMidi(2, parent, e.degree)).toBe(degreeToMidi(2, scaleId, before[i].degree)));
+        if (parent === scaleId) expect(after).toEqual(before);
+      }
+      // the melody's live-scale degrees are untouched
+      expect(a.nodes.find((n) => n.type === 'melody')!.data.frozenPattern).toEqual(
+        unmigrated.nodes.find((n) => n.type === 'melody')!.data.frozenPattern,
+      );
+      // a migrated document is written as v2 and is then a fixed point
+      const text = serializeProject(a);
+      expect(text.split('\n')[1]).toBe('loom 2');
+      expect(serializeProject(parseOrThrow(text))).toBe(text);
+      expect(parseOrThrow(text).nodes).toEqual(a.nodes);
+    }
   });
 });
