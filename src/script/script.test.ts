@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { LOOMSCRIPT_VERSION, parseLoomScript, serializeProject } from './loomscript';
 import { degreeToMidi, parentScale, SCALE_IDS } from '../theory/scales';
 import { DEFAULT_SCRIPT } from '../graph/store';
+import { renderTimeline, type WireNote } from '../graph/timeline';
 
 function parseOrThrow(text: string) {
   const r = parseLoomScript(text);
@@ -296,5 +297,77 @@ melody -> lead -> out
       expect(serializeProject(parseOrThrow(text))).toBe(text);
       expect(parseOrThrow(text).nodes).toEqual(a.nodes);
     }
+  });
+
+  it('chords spread and arp octaves are optional keys that round-trip; bad values are rejected', () => {
+    for (const spread of ['close', 'open', 'rootless']) {
+      const line = `chords seed=202 density=0.5 register=0 volume=-16 spread=${spread} @ 700,270`;
+      const p = parseOrThrow(line);
+      expect(p.nodes[0].data.spread).toBe(spread);
+      expect(serializeProject(p).split('\n')).toContain(line);
+    }
+    for (const octaves of [1, 2]) {
+      const line = `arp seed=505 density=0.45 register=0 volume=-14 octaves=${octaves} @ 700,-230`;
+      const p = parseOrThrow(line);
+      expect(p.nodes[0].data.octaves).toBe(octaves);
+      expect(serializeProject(p).split('\n')).toContain(line);
+    }
+    expect('octaves' in parseOrThrow('arp seed=5').nodes[0].data).toBe(false);
+    expect(parseLoomScript('chords spread=wide').ok).toBe(false);
+    expect(parseLoomScript('arp octaves=3').ok).toBe(false);
+    expect(parseLoomScript('melody spread=open').ok).toBe(false);
+    expect(parseLoomScript('bass octaves=2').ok).toBe(false);
+  });
+
+  it('v1 migration: the arp register drops by one (the v1 default 1 becomes 0); v2 registers read verbatim', () => {
+    const arpOf = (text: string) => parseOrThrow(text).nodes.find((n) => n.type === 'arp')!.data.register;
+    expect(arpOf('loom 1\narp seed=5')).toBe(0);
+    expect(arpOf('loom 1\narp seed=5 register=1')).toBe(0);
+    expect(arpOf('loom 1\narp seed=5 register=2')).toBe(1);
+    expect(arpOf('loom 1\narp seed=5 register=0')).toBe(-1);
+    expect(arpOf('loom 1\narp seed=5 register=-2')).toBe(-2);
+    expect(parseOrThrow('loom 1\nmelody seed=1 register=1').nodes[0].data.register).toBe(1);
+    expect(arpOf('loom 2\narp seed=5 register=1')).toBe(1);
+    expect(arpOf('arp seed=5')).toBe(0);
+    const v1 = 'loom 1\narp seed=5 register=2 volume=-14 @ 700,-230';
+    expect(parseOrThrow(v1)).toEqual(parseOrThrow(v1));
+    const text = serializeProject(parseOrThrow(v1));
+    expect(text).toContain('arp seed=5 density=0.45 register=1 volume=-14 @ 700,-230');
+    expect(serializeProject(parseOrThrow(text))).toBe(text);
+  });
+
+  it('v1 migration reaches scenes: a scene arp register drops by one, and launching it keeps the arp in C5..A6', () => {
+    const v1 = DEFAULT_SCRIPT.replace('loom 2', 'loom 1').replace('arp    seed=505', 'arp    seed=505 register=1') +
+      'scene "s1" key=C scale=minor_pent tempo=100 evolve=off journey=off arp.register=1 arp.density=0.9\n' +
+      'scene "s2" key=C scale=minor_pent tempo=100 evolve=off journey=off arp.register=2 melody.density=0.3\n' +
+      'scene "s3" key=C scale=minor_pent tempo=100 evolve=off journey=off melody.density=0.3\n';
+    const p = parseOrThrow(v1);
+    expect(p.nodes.find((n) => n.type === 'arp')!.data.register).toBe(0);
+    expect(p.scenes.map((s) => s.players.arp?.register)).toEqual([0, 1, undefined]);
+    expect(parseOrThrow(v1)).toEqual(p);
+    // launch s1 the way the store does: merge the scene's player fields into the node
+    const launched = { ...p, nodes: p.nodes.map((n) => (p.scenes[0].players[n.id] ? { ...n, data: { ...n.data, ...p.scenes[0].players[n.id] } } : n)) };
+    const arp = renderTimeline(launched, 0, 4).flatMap((b) => (b.audible.includes('arp') ? ((b.patterns.arp ?? []) as WireNote[]) : []));
+    expect(arp.length).toBeGreaterThan(0);
+    for (const n of arp) expect(n.midis[0] >= 72 && n.midis[0] <= 93).toBe(true);
+    // saved back as v2, the migrated scenes read verbatim
+    const text = serializeProject(p);
+    expect(text).toContain('arp.register=0 arp.density=0.9');
+    expect(serializeProject(parseOrThrow(text))).toBe(text);
+    expect(parseOrThrow(text).scenes).toEqual(p.scenes);
+  });
+
+  it('scenes carry chords colour/spread and arp octaves, validated, and round-trip', () => {
+    const line = 'scene "wide" key=D scale=dorian tempo=90 evolve=on journey=off chords.colour=7th chords.spread=open chords.density=0.4 arp.octaves=2';
+    const p = parseOrThrow(`chords seed=1\narp seed=2\n${line}`);
+    expect(p.scenes[0].players).toEqual({ chords: { colour: '7th', spread: 'open', density: 0.4 }, arp: { octaves: 2 } });
+    expect(serializeProject(p).split('\n')).toContain(line);
+    expect(serializeProject(parseOrThrow(serializeProject(p)))).toBe(serializeProject(p));
+    expect(parseLoomScript('scene "x" chords.spread=wide').ok).toBe(false);
+    expect(parseLoomScript('scene "x" arp.octaves=3').ok).toBe(false);
+    expect(parseLoomScript('scene "x" melody.colour=7th').ok).toBe(false);
+    // a scene snapshot taken in the app holds the full node data: role params survive a save and reload
+    const snap = { ...p, scenes: [{ ...p.scenes[0], players: { chords: { seed: 1, colour: 'quartal', spread: 'rootless', label: 'x' }, arp: { seed: 2, octaves: 1 } } }] };
+    expect(parseOrThrow(serializeProject(snap)).scenes[0].players).toEqual({ chords: { seed: 1, colour: 'quartal', spread: 'rootless' }, arp: { seed: 2, octaves: 1 } });
   });
 });

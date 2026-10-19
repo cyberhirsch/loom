@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import { SCALES, SCALE_IDS, degreeToMidi, parentScale, pcOf } from './scales';
 import {
-  buildContext, cadenceTable, chordAt, chordMidi, chordPalette, contextFromDegrees, eventMidis, generateProgression, isChangeAt,
+  buildContext, cadenceTable, chordAt, chordMidi, chordPalette, contextFromDegrees, generateProgression, isChangeAt,
   makeChord, buildJourney, CHORD_COLOURS, type HarmonicContext,
 } from './harmony';
 import { generateTheme } from './motif';
@@ -394,7 +394,7 @@ describe('pitch-class chords from the parent mode, per-mode functional progressi
         for (const e of generateBass(ctx, { seed, density: 1, register: 0, kickSteps })) {
           if (e.passing) continue;
           const c = chordAt(ctx, e.step);
-          const rel = pcOf(eventMidis(ctx, 'bass', e.degree, -2)[0] - c.rootPc);
+          const rel = pcOf(degreeToMidi(ctx.keyIndex, parentScale(scaleId), e.degree, -2) - c.rootPc);
           if (rel === 7) fifths++;
           else if (rel !== 0) bad.push(`${scaleId} seed ${seed} @${e.step} +${rel} over ${c.roman}`);
         }

@@ -128,6 +128,55 @@ export function voiceMotionPerChange(notes: StreamNote[]): number | null {
   return moves ? +(sum / moves).toFixed(2) : null;
 }
 
+/** notes sounding at stream step `t` (each for at least its onset step) */
+const soundingAt = (notes: StreamNote[], t: number) => notes.filter((n) => n.t <= t && t < n.t + Math.max(1, Math.ceil(n.lenSteps)));
+
+/** Stacking between parts, step by step where both sound: % of steps with the pad's top under the melody's
+ *  lowest note, and with the bass under the pad's lowest note. */
+export function stacking(bars: Bar[]) {
+  const chords = pitchedStream(bars, 'chords');
+  const melody = pitchedStream(bars, 'melody');
+  const bass = pitchedStream(bars, 'bass');
+  let padMel = 0;
+  let padUnder = 0;
+  let bassPad = 0;
+  let bassUnder = 0;
+  for (let t = 0; t < totalSteps(bars); t++) {
+    const c = soundingAt(chords, t).flatMap((n) => n.midis);
+    if (!c.length) continue;
+    const m = soundingAt(melody, t).flatMap((n) => n.midis);
+    const b = soundingAt(bass, t).flatMap((n) => n.midis);
+    if (m.length) {
+      padMel++;
+      if (Math.max(...c) < Math.min(...m)) padUnder++;
+    }
+    if (b.length) {
+      bassPad++;
+      if (Math.max(...b) < Math.min(...c)) bassUnder++;
+    }
+  }
+  return {
+    padUnderMelodyPct: padMel ? +((padUnder / padMel) * 100).toFixed(1) : null,
+    bassUnderPadPct: bassPad ? +((bassUnder / bassPad) * 100).toFixed(1) : null,
+  };
+}
+
+/** the lowest/highest bass note that is the chord's root on a change */
+export function bassRootBounds(bars: Bar[]) {
+  const roots = pitchedStream(bars, 'bass').filter((n) => isChangeAt(bars[n.bar].ctx, n.step) && pc(n.midis[0]) === chordAt(bars[n.bar].ctx, n.step).rootPc);
+  return registerBounds(roots);
+}
+
+/** mean top-voice move per chord change, and the share of changes it stays within a major 3rd */
+export function topVoiceMotion(notes: StreamNote[]) {
+  const moves: number[] = [];
+  for (let i = 1; i < notes.length; i++) {
+    if ([...notes[i - 1].midis].sort((a, b) => a - b).join() === [...notes[i].midis].sort((a, b) => a - b).join()) continue;
+    moves.push(Math.abs(Math.max(...notes[i].midis) - Math.max(...notes[i - 1].midis)));
+  }
+  return moves.length ? { mean: +(moves.reduce((a, b) => a + b, 0) / moves.length).toFixed(2), within4Pct: Math.round((moves.filter((m) => m <= 4).length / moves.length) * 100) } : null;
+}
+
 export function registerBounds(notes: StreamNote[]) {
   const all = notes.flatMap((n) => n.midis);
   if (!all.length) return null;
@@ -237,6 +286,8 @@ export function sweepMetrics(bars: Bar[]) {
     longestSameRun: melody.length ? longestSameRun(melody) : null,
     melodyMaxRestSteps: melody.length ? maxRestSteps(melody, totalSteps(bars)) : null,
     voiceMotionPerChange: voiceMotionPerChange(pitchedStream(bars, 'chords')),
+    topVoiceWithin4Pct: topVoiceMotion(pitchedStream(bars, 'chords'))?.within4Pct ?? null,
+    ...stacking(bars),
     clashesPerBar: clashes(bars).perBar,
     distinctBars: v.distinctBars.all,
     melodyVsFirst: v.vsFirstSimilarity.melody ?? null,

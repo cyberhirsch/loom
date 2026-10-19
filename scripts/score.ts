@@ -9,7 +9,8 @@
  *   npm run score -- [--template default|ambient|lofi|techno] [--key C]
  *                    [--scale minor_pent] [--steps 16] [--bars 1] [--evolve|--no-evolve]
  *                    [--melody 101] [--chords 202] [--bass 303] [--drums 404]
- *                    [--arp 505] [--colour triad|7th|quartal] [--json]
+ *                    [--arp 505] [--colour triad|7th|quartal] [--spread close|open|rootless]
+ *                    [--octaves 1|2] [--json]
  *                    [--sweep N [--sweep-player melody|chords|bass|drums|arp]]
  *
  * --bars N renders N timeline bars (one bar = one loop of --steps until
@@ -28,6 +29,7 @@ import { partInstruments, ringingAt, simulateVoices, tailClashes, type Envelope,
 import {
   aggregate, bassRootOnChangePct, chordPcsAt, clashes, drumStats, longestSameRun, maxRestSteps, nn, partMetrics, pc,
   pitchedStream, registerBounds, similarity, sweepMetrics, variation, voiceMotionPerChange, PITCHED,
+  bassRootBounds, stacking, topVoiceMotion,
 } from './scoreMetrics';
 
 // ---------------------------------------------------------------------------
@@ -61,6 +63,8 @@ function withOverrides(seeds: Partial<Record<PlayerKind, number>> = {}): Timelin
     if (opt(kind)) n.data.seed = Number(opt(kind));
     if (seeds[kind] !== undefined) n.data.seed = seeds[kind];
     if (kind === 'chords' && opt('colour')) n.data.colour = opt('colour') as ChordColour;
+    if (kind === 'chords' && opt('spread')) n.data.spread = opt('spread');
+    if (kind === 'arp' && opt('octaves')) n.data.octaves = Number(opt('octaves'));
   }
   return p;
 }
@@ -161,17 +165,23 @@ function tails() {
 // metrics
 // ---------------------------------------------------------------------------
 
-function chordName(midis: number[]): string {
-  const root = pc(midis[0]);
-  const ivs = [...new Set(midis.map((m) => (pc(m) - root + 12) % 12))].sort((a, b) => a - b).join(',');
-  const SUFFIX: Record<string, string> = {
-    '0,4,7': '', '0,3,7': 'm', '0,3,6': 'dim', '0,4,8': 'aug', '0,5,7': 'sus4', '0,2,7': 'sus2',
-    '0,4,7,11': 'maj7', '0,3,7,10': 'm7', '0,4,7,10': '7', '0,3,6,10': 'm7b5',
-    // quartal colour: stacked fourths (a major third where the mode has no perfect fourth)
-    '0,5,10': '4ths', '0,5,9': '4ths', '0,4,9': '4ths',
-  };
-  const s = SUFFIX[ivs];
-  return s !== undefined ? `${NOTE_NAMES[root]}${s}` : `${NOTE_NAMES[root]}?{${midis.map((m) => NOTE_NAMES[pc(m)]).join('-')}}`;
+const SUFFIX: Record<string, string> = {
+  '0,4,7': '', '0,3,7': 'm', '0,3,6': 'dim', '0,4,8': 'aug', '0,5,7': 'sus4', '0,2,7': 'sus2',
+  '0,4,7,11': 'maj7', '0,3,7,10': 'm7', '0,4,7,10': '7', '0,3,6,10': 'm7b5',
+  // quartal colour: stacked fourths (a major third where the mode has no perfect fourth)
+  '0,5,10': '4ths', '0,5,9': '4ths', '0,4,9': '4ths',
+};
+
+/** A chord's name from its notes in any inversion: the given root first, then the bass note, then each tone. */
+function chordName(midis: number[], rootPc?: number): string {
+  const pcs = [...new Set(midis.map(pc))];
+  const low = pc(Math.min(...midis));
+  const roots = [...new Set([...(rootPc !== undefined ? [rootPc] : []), low, ...pcs])];
+  for (const root of roots) {
+    const s = SUFFIX[pcs.map((p) => (p - root + 12) % 12).sort((a, b) => a - b).join(',')];
+    if (s !== undefined) return `${NOTE_NAMES[root]}${s}`;
+  }
+  return `${NOTE_NAMES[low]}?{${[...midis].sort((a, b) => a - b).map((m) => NOTE_NAMES[pc(m)]).join('-')}}`;
 }
 
 const first = bars[0];
@@ -200,7 +210,7 @@ const metrics = {
     chordChangesPerLoop: changeSteps.length,
     chordChangesPerBar: +(changeSteps.length / (steps / 16)).toFixed(2),
     secondsPerChord: +(secondsPerLoop / changeSteps.length).toFixed(2),
-    chords: changeSteps.map((i) => `@${i} ${chordName(chordMidi(ctx0, chordAt(ctx0, i).degree, 0))}`),
+    chords: changeSteps.map((i) => `@${i} ${chordName(chordMidi(ctx0, chordAt(ctx0, i).degree, 0), chordAt(ctx0, i).rootPc)}`),
     roman: changeSteps.map((i) => `${chordAt(ctx0, i).roman} ${chordAt(ctx0, i).func}`),
   },
   parts: PITCHED.filter((k) => bars.some((b) => b.audible.includes(k))).map((k) => partMetrics(bars, k)),
@@ -215,7 +225,10 @@ const metrics = {
   longestSameRun: stream.melody.length ? longestSameRun(stream.melody) : null,
   melodyMaxRestSteps: stream.melody.length ? maxRestSteps(stream.melody, totalSteps) : null,
   voiceMotionPerChange: voiceMotionPerChange(stream.chords),
+  topVoiceMotion: topVoiceMotion(stream.chords),
+  stacking: stacking(bars),
   registerBounds: Object.fromEntries(PITCHED.map((k) => [k, registerBounds(stream[k])])),
+  bassRootBounds: bassRootBounds(bars),
   semitoneClashes: clashes(bars),
   heard: tails(),
   variation: variation(bars),
@@ -261,7 +274,7 @@ function rowFor(label: string, bar: BarRender, kind: PlayerKind, mark: (n: WireN
   const own = new Set(((nodeId ? bar.parts[nodeId] : undefined) ?? []).map((e) => e.step));
   for (const n of notes ?? []) {
     const grace = kind !== 'chords' && own.size > 0 && !own.has(n.step) ? '^' : '';
-    cells[n.step] = n.midis.length > 1 ? chordName(n.midis) : nn(n.midis[0]) + mark(n, n.midis[0]) + grace;
+    cells[n.step] = n.midis.length > 1 ? chordName(n.midis, chordAt(bar.ctx, n.step).rootPc) : nn(n.midis[0]) + mark(n, n.midis[0]) + grace;
     for (let k = 1; k < n.lenSteps && n.step + k < bar.steps; k++) if (cells[n.step + k] === '.') cells[n.step + k] = '~';
   }
   let out = pad(label).padEnd(9);
@@ -290,7 +303,7 @@ for (const bar of bars) {
   }
   console.log(ruler(bar.steps));
   let cr = pad('harmony').padEnd(9);
-  for (let s = 0; s < bar.steps; s++) cr += sep(s) + pad(isChangeAt(bar.ctx, s) ? chordName(chordMidi(bar.ctx, chordAt(bar.ctx, s).degree, 0)) : '');
+  for (let s = 0; s < bar.steps; s++) cr += sep(s) + pad(isChangeAt(bar.ctx, s) ? chordName(chordMidi(bar.ctx, chordAt(bar.ctx, s).degree, 0), chordAt(bar.ctx, s).rootPc) : '');
   console.log(cr);
   console.log(rowFor('melody', bar, 'melody', nonChord));
   console.log(rowFor('arp', bar, 'arp', nonChord));

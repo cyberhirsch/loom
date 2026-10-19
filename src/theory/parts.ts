@@ -142,22 +142,28 @@ export function generateChords(ctx: HarmonicContext, params: PartParams): NoteEv
   return events;
 }
 
-/** Arp patterns as indices into the chord tones it plays (root first, ascending); an index past the last tone wraps an octave up. */
-const ARP_PATTERNS: Array<[number[], number]> = [
-  [[0, 1, 2, 3], 2], // up
-  [[3, 2, 1, 0], 1], // down
-  [[0, 2, 1, 3], 1.2], // skip
-  [[0, 1, 2, 1], 1.4], // up-back
+/** Arp patterns as indices into the chord tones it plays (root first, ascending); an index past the last
+ *  tone wraps an octave up. Each comes in a one-octave and a two-octave run. */
+const ARP_PATTERNS: Array<[{ 1: number[]; 2: number[] }, number]> = [
+  [{ 1: [0, 1, 2, 3], 2: [0, 1, 2, 3, 4, 5, 6, 7] }, 2], // up
+  [{ 1: [3, 2, 1, 0], 2: [7, 6, 5, 4, 3, 2, 1, 0] }, 1], // down
+  [{ 1: [0, 2, 1, 3], 2: [0, 2, 1, 3, 2, 4, 3, 5] }, 1.2], // skip
+  [{ 1: [0, 1, 2, 1], 2: [0, 1, 2, 3, 4, 3, 2, 1] }, 1.4], // up-back
 ];
+
+export interface ArpParams extends PartParams {
+  /** octaves the run climbs (1 or 2) */
+  octaves?: number;
+}
 
 /** Arp: runs over the current chord's tones, direction-seeded, ornament density. It plays only the
  *  chord tones inside the live scale (a pentatonic filter drops the parent-mode ones, which the
  *  pad still sounds), so it stays in the melody's note set and never rubs against the chord; its
  *  degrees are live-scale degrees. */
-export function generateArp(ctx: HarmonicContext, params: PartParams): NoteEvent[] {
+export function generateArp(ctx: HarmonicContext, params: ArpParams): NoteEvent[] {
   const rng = mulberry32(params.seed);
   const events: NoteEvent[] = [];
-  const pattern = pickWeighted(rng, ARP_PATTERNS);
+  const pattern = pickWeighted(rng, ARP_PATTERNS)[params.octaves === 2 ? 2 : 1];
   const iv = SCALES[ctx.scaleId].intervals;
   const len = iv.length;
   const filter = new Set(scalePcs(0, ctx.scaleId));

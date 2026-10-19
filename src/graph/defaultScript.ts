@@ -10,7 +10,7 @@ section "A · sparse" loops=4 intensity=0.65
 section "B · full" loops=4 intensity=1
 section "C · lift" loops=2 intensity=1.2 journey=1
 
-arp    seed=505 density=0.45 register=1 volume=-14 @ 700,-230
+arp    seed=505 density=0.45 volume=-14 @ 700,-230
 melody seed=101 density=0.55 adventure=0.35 volume=-9 @ 700,20
 chords seed=202 density=0.5 volume=-16 @ 700,270
 bass   seed=303 density=0.5 volume=-10 @ 700,520

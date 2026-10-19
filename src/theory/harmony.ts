@@ -311,15 +311,11 @@ export function roleContext(ctx: HarmonicContext, role: PitchedRole): HarmonicCo
   return scaleId === ctx.scaleId ? ctx : { ...ctx, scaleId };
 }
 
-/** Chord MIDI notes for a chord rooted on parent degree `degree`, root position, at an octave offset. */
+/** A chord's tones in root position at an octave offset — for naming and analysis; what sounds is
+ *  voiced by the shared resolver (src/graph/resolve.ts). */
 export function chordMidi(ctx: HarmonicContext, degree: number, octave: number): number[] {
   const oct = Math.floor(degree / 7);
   return chordSemis(ctx.scaleId, ((degree % 7) + 7) % 7, ctx.colour).map((t) => 60 + ctx.keyIndex + t + 12 * (octave + oct));
-}
-
-/** One event's MIDI notes for a role: the single place theory degrees become pitches. */
-export function eventMidis(ctx: HarmonicContext, role: PitchedRole, degree: number, octave: number): number[] {
-  return role === 'chords' ? chordMidi(ctx, degree, octave) : [degreeToMidi(ctx.keyIndex, roleScale(ctx, role), degree, octave)];
 }
 
 /** Harmonic journey — related keys/modes to visit over time (PRD §5.3 Modulate). */

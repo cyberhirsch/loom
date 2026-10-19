@@ -126,6 +126,37 @@ function PlayerNodeView({ id, type, selected }: NodeProps) {
             </select>
           </div>
         )}
+        {kind === 'chords' && (
+          <div className="node-row">
+            <label style={{ fontSize: 10, color: 'var(--muted)' }}>spread</label>
+            <select
+              className="nodrag"
+              value={String(data.spread ?? 'close')}
+              onChange={(e) => update(id, { spread: e.target.value })}
+              aria-label="Chord spread"
+              title="How the pad voices each chord — always voice-led, under the melody and above the bass"
+            >
+              <option value="close">close</option>
+              <option value="open">open · drop-2</option>
+              <option value="rootless">rootless · root left to the bass</option>
+            </select>
+          </div>
+        )}
+        {kind === 'arp' && (
+          <div className="node-row">
+            <label style={{ fontSize: 10, color: 'var(--muted)' }}>octaves</label>
+            <select
+              className="nodrag"
+              value={String(data.octaves ?? 1)}
+              onChange={(e) => update(id, { octaves: Number(e.target.value) })}
+              aria-label="Arp octaves"
+              title="How many octaves the run climbs"
+            >
+              <option value="1">1</option>
+              <option value="2">2</option>
+            </select>
+          </div>
+        )}
         {kind !== 'drums' && (
           <Slider id={id} field="register" label="register" min={-2} max={2} step={1} format={(v) => (v > 0 ? `+${v}` : String(v))} />
         )}

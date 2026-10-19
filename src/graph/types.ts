@@ -1,6 +1,7 @@
 import type { Node } from '@xyflow/react';
 import type { ScaleId } from '../theory/scales';
 import type { ChordColour } from '../theory/harmony';
+import type { ChordSpread } from '../theory/voicing';
 import type { NoteEvent } from '../theory/melody';
 import type { DrumEvent } from '../theory/parts';
 
@@ -56,9 +57,13 @@ export interface PlayerData extends Record<string, unknown> {
   adventurousness: number; // 0..1 (melody)
   syncopation: number; // 0..1 (drums)
   articulation?: number; // bass gate as a fraction of the gap to the next note (default 0.95)
-  register: number; // octave offset from role default
+  register: number; // octave shift of the role's pitch window
   /** chords only: how chords are built on their roots (default triad) — shapes the shared harmony */
   colour?: ChordColour;
+  /** chords only: how the voicing spreads (default close) */
+  spread?: ChordSpread;
+  /** arp only: octaves the run climbs, 1 or 2 (default 1) */
+  octaves?: number;
   mute: boolean;
   volume: number; // dB
   /** capture/freeze (PRD §5.2): when true, frozenPattern plays verbatim, outside the generative flow */

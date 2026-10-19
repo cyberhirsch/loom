@@ -71,17 +71,8 @@ export function computeBasePattern(
         articulation: data.articulation,
       });
     case 'arp':
-      return generateArp(ctx, { seed: data.seed, density, register: data.register });
+      return generateArp(ctx, { seed: data.seed, density, register: data.register, octaves: data.octaves });
     case 'drums':
       return generateDrums(ctx, { seed: data.seed, density, syncopation: data.syncopation });
   }
 }
-
-/** Role octave defaults (PRD §5.3 layers & voicing). */
-export const ROLE_OCTAVE: Record<PlayerKind, number> = {
-  melody: 0,
-  chords: -1,
-  bass: -2,
-  arp: 1,
-  drums: 0,
-};

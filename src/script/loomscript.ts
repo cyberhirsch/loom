@@ -12,6 +12,7 @@ import type { ConductorState, LoomNode, PlayerKind } from '../graph/types';
 import type { Scene } from '../graph/store';
 import { NOTE_NAMES, SCALES, degreeToMidi, parentScale, type ScaleId } from '../theory/scales';
 import { CHORD_COLOURS, type ChordColour } from '../theory/harmony';
+import { CHORD_SPREADS, type ChordSpread } from '../theory/voicing';
 import type { NoteEvent } from '../theory/melody';
 import type { DrumEvent } from '../theory/parts';
 
@@ -48,6 +49,18 @@ const PLAYER_PARAMS: Record<string, string> = {
   mute: 'mute',
 };
 const PLAYER_FIELD_TO_PARAM = Object.fromEntries(Object.entries(PLAYER_PARAMS).map(([k, v]) => [v, k]));
+/** role-specific player params (script name = data field), on player lines and in scenes */
+const ROLE_PARAMS: Partial<Record<PlayerKind, string[]>> = { chords: ['colour', 'spread'], arp: ['octaves'] };
+
+/** a role-specific param's value, or why it is rejected; null when the role has no such param */
+function roleParam(kind: PlayerKind, key: string, value: string): { value: unknown } | { error: string } | null {
+  if (!ROLE_PARAMS[kind]?.includes(key)) return null;
+  if (key === 'colour')
+    return CHORD_COLOURS.includes(value as ChordColour) ? { value } : { error: `colour must be ${CHORD_COLOURS.join('|')}, got "${value}"` };
+  if (key === 'spread')
+    return CHORD_SPREADS.includes(value as ChordSpread) ? { value } : { error: `spread must be ${CHORD_SPREADS.join('|')}, got "${value}"` };
+  return value === '1' || value === '2' ? { value: Number(value) } : { error: `octaves must be 1|2, got "${value}"` };
+}
 
 // ---------------------------------------------------------------------------
 // serialize
@@ -71,6 +84,8 @@ function playerLine(n: LoomNode): string {
     if (d[field] !== undefined) parts.push(`${param}=${round(Number(d[field]))}`);
   }
   if (n.type === 'chords' && d.colour !== undefined) parts.push(`colour=${d.colour}`);
+  if (n.type === 'chords' && d.spread !== undefined) parts.push(`spread=${d.spread}`);
+  if (n.type === 'arp' && d.octaves !== undefined) parts.push(`octaves=${round(Number(d.octaves))}`);
   return parts.join(' ') + pos(n);
 }
 
@@ -214,8 +229,10 @@ export function serializeProject(p: { nodes: LoomNode[]; edges: Edge[]; conducto
         const kind = byId.get(id)?.type ?? id;
         for (const [field, value] of Object.entries(data)) {
           const param = PLAYER_FIELD_TO_PARAM[field];
-          if (!param) continue; // skips frozen/frozenPattern and unknowns
-          parts.push(`${kind}.${param}=${field === 'mute' ? onOff(value) : round(Number(value))}`);
+          if (param) parts.push(`${kind}.${param}=${field === 'mute' ? onOff(value) : round(Number(value))}`);
+          else if (ROLE_PARAMS[kind as PlayerKind]?.includes(field) && value !== undefined)
+            parts.push(`${kind}.${field}=${typeof value === 'number' ? round(value) : String(value)}`);
+          // anything else (frozen/frozenPattern, labels) is not part of a scene
         }
       }
       lines.push(parts.join(' '));
@@ -299,7 +316,7 @@ export const DEFAULT_PLAYER: Record<PlayerKind, Record<string, unknown>> = {
   chords: { seed: 202, density: 0.5, adventurousness: 0.35, syncopation: 0.3, register: 0, mute: false, volume: -16 },
   bass: { seed: 303, density: 0.5, adventurousness: 0.35, syncopation: 0.3, register: 0, mute: false, volume: -10 },
   drums: { seed: 404, density: 0.6, adventurousness: 0.35, syncopation: 0.3, register: 0, mute: false, volume: -8 },
-  arp: { seed: 505, density: 0.45, adventurousness: 0.35, syncopation: 0.3, register: 1, mute: false, volume: -14 },
+  arp: { seed: 505, density: 0.45, adventurousness: 0.35, syncopation: 0.3, register: 0, mute: false, volume: -14 },
 };
 
 /** auto-layout columns for nodes declared without @ x,y */
@@ -373,6 +390,8 @@ export function parseLoomScript(text: string): ParseResult {
   const chainLines: Array<{ lineNo: number; text: string }> = [];
   // a document without a header is read as the current version (hand- or LLM-written)
   let version = LOOMSCRIPT_VERSION;
+  /** the arp line spells out its register (v1 migration) */
+  let arpRegisterSpelled = false;
 
   const rawLines = text.split(/\r?\n/);
   for (let li = 0; li < rawLines.length; li++) {
@@ -542,12 +561,18 @@ export function parseLoomScript(text: string): ParseResult {
           const kind = key.slice(0, dot) as PlayerKind;
           const param = key.slice(dot + 1);
           const field = PLAYER_PARAMS[param];
-          if (!PLAYER_KINDS.includes(kind) || !field) {
+          const role = PLAYER_KINDS.includes(kind) ? roleParam(kind, param, value) : null;
+          if (role && 'error' in role) {
+            errors.push({ line: lineNo, message: `scene ${kind}.${role.error}` });
+            continue;
+          }
+          if (!PLAYER_KINDS.includes(kind) || (!field && !role)) {
             errors.push({ line: lineNo, message: `scene has no param "${key}"` });
             continue;
           }
           scene.players[kind] ??= {};
-          scene.players[kind][field] = field === 'mute' ? parseBool(value) ?? false : parseNum(value) ?? 0;
+          if (role) scene.players[kind][param] = role.value;
+          else scene.players[kind][field] = field === 'mute' ? parseBool(value) ?? false : parseNum(value) ?? 0;
         } else if (key === 'key') {
           const idx = NOTE_NAMES.indexOf(value.toUpperCase());
           if (idx !== -1) scene.conductor.keyIndex = idx;
@@ -566,15 +591,15 @@ export function parseLoomScript(text: string): ParseResult {
       const data: Record<string, unknown> = { ...DEFAULT_PLAYER[kind] };
       const { kvs, at } = splitParams(tokens.slice(1), lineNo, errors);
       for (const { key, value } of kvs) {
-        if (key === 'colour' && kind === 'chords') {
-          if (!CHORD_COLOURS.includes(value as ChordColour))
-            errors.push({ line: lineNo, message: `colour must be ${CHORD_COLOURS.join('|')}, got "${value}"` });
-          else data.colour = value;
+        const role = roleParam(kind, key, value);
+        if (role) {
+          if ('error' in role) errors.push({ line: lineNo, message: role.error });
+          else data[key] = role.value;
           continue;
         }
         const field = PLAYER_PARAMS[key];
         if (!field) {
-          const known = [...Object.keys(PLAYER_PARAMS), ...(kind === 'chords' ? ['colour'] : [])];
+          const known = [...Object.keys(PLAYER_PARAMS), ...(ROLE_PARAMS[kind] ?? [])];
           errors.push({ line: lineNo, message: `${kind} has no param "${key}" (${known.join(', ')})` });
           continue;
         }
@@ -586,6 +611,7 @@ export function parseLoomScript(text: string): ParseResult {
           const n = parseNum(value);
           if (n === null) errors.push({ line: lineNo, message: `${key} must be a number, got "${value}"` });
           else data[field] = field === 'seed' || field === 'register' ? Math.round(n) : n;
+          if (kind === 'arp' && field === 'register') arpRegisterSpelled = true;
         }
       }
       addNode(kind, kind, data, at, lineNo);
@@ -737,7 +763,7 @@ export function parseLoomScript(text: string): ParseResult {
   }
 
   if (errors.length) return { ok: false, errors };
-  if (version < 2) migrateV1(nodes, conductor);
+  if (version < 2) migrateV1(nodes, scenes, conductor, arpRegisterSpelled);
   conductor.liveKeyIndex = conductor.keyIndex;
   conductor.liveScaleId = conductor.scaleId;
   conductor.journeyLabel = 'home';
@@ -750,8 +776,21 @@ export function parseLoomScript(text: string): ParseResult {
  * home scale counted pentatonic degrees; each one is re-expressed as the parent degree of
  * the same pitch, so the frozen bass line keeps its notes (a frozen chord take keeps its
  * roots and now sounds their parent-mode triads).
+ *
+ * The arp register counted octaves on top of an arp octave the role already had, so
+ * v1's default arp (register 1) sat two octaves up; registers now shift the arp's pitch
+ * window, and a v1 register r becomes r - 1 (v1's default lands on today's default 0),
+ * on the arp line and in every scene (a v1 scene snapshots the arp's register too).
  */
-function migrateV1(nodes: LoomNode[], conductor: ConductorState) {
+function migrateV1(nodes: LoomNode[], scenes: Scene[], conductor: ConductorState, arpRegisterSpelled: boolean) {
+  const arpRegister = (r: unknown) => Math.max(-2, Math.min(2, Number(r) - 1));
+  for (const n of nodes) {
+    if (n.type === 'arp' && arpRegisterSpelled) n.data.register = arpRegister(n.data.register);
+  }
+  for (const sc of scenes) {
+    const arp = sc.players.arp;
+    if (arp && typeof arp.register === 'number') arp.register = arpRegister(arp.register);
+  }
   const from = conductor.scaleId;
   const to = parentScale(from);
   if (from === to) return;

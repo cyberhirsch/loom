@@ -1,10 +1,8 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { DEFAULT_SCRIPT } from '../graph/defaultScript';
 import { parseLoomScript } from '../script/loomscript';
-import { computeContext, computeBasePattern, ROLE_OCTAVE } from '../graph/session';
-import { eventMidis } from '../theory/harmony';
-import type { NoteEvent } from '../theory/melody';
-import type { ConductorState, PlayerData, PlayerKind, SynthData } from '../graph/types';
+import { renderBar, type WireNote } from '../graph/timeline';
+import type { ConductorState, SynthData } from '../graph/types';
 import { partInstruments, ringingAt, simulateVoices, type ModelEvent, type VoiceKind } from './voiceModel';
 
 // node:fs without @types/node in the app tsconfig
@@ -174,21 +172,12 @@ beforeAll(async () => {
   await import('../../public/loom-worklet.js');
 });
 
+/** the default patch's first bar in a scale, resolved by the timeline exactly as the engine posts it */
 function defaultWire(scaleId: ConductorState['scaleId']) {
-  const conductor = { keyIndex: 0, scaleId, tempo: BPM, steps: 16, evolveOn: false, journeyOn: false, modEvery: 4, journeyLabel: 'home', liveKeyIndex: 0, liveScaleId: scaleId } as ConductorState;
-  const ctx = computeContext(conductor, Number(project.nodes.find((n) => n.type === 'chords')!.data.seed));
-  const wire: Partial<Record<VoiceKind, Array<{ step: number; midis: number[]; vel: number; lenSteps: number }>>> = {};
-  for (const kind of ['melody', 'chords', 'bass', 'arp'] as VoiceKind[]) {
-    const data = project.nodes.find((n) => n.type === kind)!.data as unknown as PlayerData;
-    const oct = ROLE_OCTAVE[kind as PlayerKind] + Number(data.register ?? 0);
-    const pat = (computeBasePattern(kind as PlayerKind, ctx, data) as NoteEvent[]).slice().sort((a, b) => a.step - b.step);
-    wire[kind] = pat.map((ev) => ({
-      step: ev.step,
-      midis: eventMidis(ctx, kind, ev.degree, oct),
-      vel: ev.velocity,
-      lenSteps: ev.lengthSteps,
-    }));
-  }
+  const conductor = { ...project.conductor, keyIndex: 0, scaleId, tempo: BPM, steps: 16, evolveOn: false, journeyOn: false, liveKeyIndex: 0, liveScaleId: scaleId };
+  const bar = renderBar({ nodes: project.nodes, edges: project.edges, conductor }, 0);
+  const wire: Partial<Record<VoiceKind, WireNote[]>> = {};
+  for (const kind of ['melody', 'chords', 'bass', 'arp'] as VoiceKind[]) wire[kind] = bar.patterns[kind] as WireNote[];
   return wire;
 }
 

@@ -16,7 +16,7 @@ section "A · sparse" loops=4 intensity=0.65
 section "B · full" loops=4 intensity=1
 section "C · lift" loops=2 intensity=1.2 journey=1
 
-arp    seed=505 density=0.45 register=1 volume=-14
+arp    seed=505 density=0.45 volume=-14
 melody seed=101 density=0.55 adventure=0.35 volume=-9
 chords seed=202 density=0.5 volume=-16
 bass   seed=303 density=0.5 volume=-10
@@ -61,12 +61,14 @@ melody seed=101 density=0.55 adventure=0.35 register=0 volume=-9 mute=off
 | role | notes |
 |---|---|
 | `melody` | the lead voice; `adventure` (0..1) = interval daring |
-| `chords` | comping pads; its `seed` drives the shared chord progression (harmony-first); `colour` (optional, default `triad`) = how every chord is built on its root: `triad`, `7th` (adds the diatonic 7th) or `quartal` (stacked fourths). The colour shapes the shared harmony: melody and arp aim at the tones the chords actually sound |
+| `chords` | comping pads; its `seed` drives the shared chord progression (harmony-first); `colour` (optional, default `triad`) = how every chord is built on its root: `triad`, `7th` (adds the diatonic 7th) or `quartal` (stacked fourths). The colour shapes the shared harmony: melody and arp aim at the tones the chords actually sound. `spread` (optional, default `close`) = how the pad voices each chord: `close`, `open` (drop-2: the second voice from the top an octave down) or `rootless` (the root left to the bass). Every spread is voice-led: each chord takes the inversion nearest the last one, its top voice under the melody and its lowest voice above the bass |
 | `bass` | root on every chord change, locked to the kick; `artic` (0.1..1, optional, default 0.95; lower values are clamped) = note length as a share of the gap to the next note (0.95 legato, 0.5 staccato) |
 | `drums` | kick on 1 and snare on 2 & 4 always; `syncopate` (0..1) = off-grid feel |
-| `arp` | ornamental arpeggios |
+| `arp` | ornamental arpeggios; `octaves` (optional, `1` or `2`, default 1) = how many octaves the run climbs (`2` opens the arp's window up to A7) |
 
-Common params: `seed` (int — same seed, same music), `density` (0..1, how busy), `register` (-2..2 octave offset), `volume` (dB, ≤0), `mute` (on/off).
+Common params: `seed` (int — same seed, same music), `density` (0..1, how busy), `register` (-2..2, octaves to shift the role's pitch window), `volume` (dB, ≤0), `mute` (on/off).
+
+Each role sounds in a fixed pitch window, whatever the key, so a key change or a journey stop never drags a part out of its range: melody with its tonic in G3–F#4 (the tune's middle around F4–E5), chords in C3–C5 under the melody, bass in E1–D3 with the chord roots in G1–G2 and always below the pad, arp in C5–A6 (C5–A7 with `octaves=2`). `register` moves the window by whole octaves.
 
 ### Frozen takes (capture)
 
@@ -142,7 +144,7 @@ Typed mistakes are rejected with guidance, e.g. `melody -> delay1` → *"melody 
 
 ## Scenes (launcher snapshots)
 
-One line per scene: conductor settings plus any `player.param` overrides.
+One line per scene: conductor settings plus any `player.param` overrides, the role params included (`chords.colour`, `chords.spread`, `arp.octaves`, validated like on the player lines).
 
 ```
 scene "verse" key=C scale=lydian tempo=74 evolve=on journey=off melody.density=0.3 drums.mute=on
@@ -154,7 +156,7 @@ Every progression opens on the tonic, moves by function (tonic → subdominant �
 
 ## Versions
 
-`loom 2` (current): bass and chords takes count parent-mode degrees, and the `chords` line may carry `colour`. A `loom 1` document loads with one deterministic migration: over a pentatonic home scale, every bass and chords take degree is rewritten as the parent-mode degree of the same pitch (the frozen bass keeps its notes; a frozen chords take keeps its roots and plays their parent-mode triads). Everything else in a v1 document reads as is, and the app saves it back as `loom 2`.
+`loom 2` (current): bass and chords takes count parent-mode degrees, the `chords` line may carry `colour` and `spread`, the `arp` line `octaves`, and `register` shifts a role's pitch window. A `loom 1` document loads with deterministic migrations: over a pentatonic home scale, every bass and chords take degree is rewritten as the parent-mode degree of the same pitch (the frozen bass keeps its notes; a frozen chords take keeps its roots and plays their parent-mode triads); and an arp `register=r` becomes `register=r-1`, on the `arp` line and in every scene's `arp.register` (v1 counted the arp's register on top of an octave the arp already had, so its default `register=1` sat two octaves up; it now lands on the default 0). Everything else in a v1 document reads as is, and the app saves it back as `loom 2`.
 
 ## Recipes for LLMs
 
@@ -166,5 +168,7 @@ Every progression opens on the tonic, moves by function (tonic → subdominant �
 - **Longer song structures**: `phrase=32` in conductor for 8-bar question/answer themes (vs. 16 = 4-bar, 8 = 2-bar).
 - **A song arc**: `arranger on` + 3–4 `section` lines with rising then falling `intensity`, a `journey=1` on the peak.
 - **Harmonic colour**: `chords … colour=7th` for jazzy/lo-fi sevenths, `colour=quartal` for open stacked-fourth (modal, So-What style) voicings.
+- **Pad spacing**: `chords … spread=open` for a wider drop-2 pad, `spread=rootless` to leave the root to the bass (on plain triads that leaves a 3rd–5th dyad; `colour=7th spread=rootless` is the classic 3-5-7 shell).
+- **A wider arp**: `arp … octaves=2`; `register=-1`/`1` moves it an octave down/up.
 - **New take of one part**: change only that player's `seed`.
 - **Same music every time**: don't touch seeds; everything is deterministic.

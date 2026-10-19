@@ -16,7 +16,8 @@ interface Golden {
   bars: string[];
   head: unknown[];
 }
-/** Recorded from the pre-timeline WasmEngine (refreshLoop) driven headless for 64 loops. */
+/** First recorded from the pre-timeline WasmEngine (refreshLoop) driven headless for 64 loops; re-recorded
+ *  when the shared resolver moved every role into its pitch window (rhythms, velocities and lengths unchanged). */
 const GOLDEN = JSON.parse(readFileSync(new URL('./__fixtures__/timeline-golden.json', import.meta.url), 'utf8')) as Record<string, Golden>;
 
 const canonical = (v: unknown): string =>
@@ -69,7 +70,7 @@ function liveMessages(project: TimelineProject, bars: number): Array<Record<stri
   return msgs;
 }
 
-describe('timeline golden: renderTimeline equals the pre-refactor engine, event for event', () => {
+describe('timeline golden: renderTimeline equals the recorded engine output, event for event', () => {
   for (const [name, make] of Object.entries(SCENARIOS)) {
     it(`${name}: ${BARS} bars`, () => {
       const golden = GOLDEN[name];

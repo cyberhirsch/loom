@@ -25,7 +25,7 @@ export const TEMPLATES: Record<TemplateId, Template> = {
       chords: { seed: 812, density: 0.55, volume: -12 },
       bass: { seed: 813, density: 0.25, volume: -14 },
       drums: { seed: 814, density: 0.2, syncopation: 0.1, mute: true },
-      arp: { seed: 815, density: 0.35, volume: -18, register: 1 },
+      arp: { seed: 815, density: 0.35, volume: -18 },
     },
     tensionToMelody: true,
   },
@@ -46,7 +46,7 @@ export const TEMPLATES: Record<TemplateId, Template> = {
       chords: { seed: 732, density: 0.3, volume: -18 },
       bass: { seed: 733, density: 0.75, volume: -8, articulation: 0.5 },
       drums: { seed: 734, density: 0.85, syncopation: 0.5, volume: -6, mute: false },
-      arp: { seed: 735, density: 0.8, volume: -13, register: 1, mute: false },
+      arp: { seed: 735, density: 0.8, volume: -13, mute: false },
     },
     arranger: {
       enabled: true,

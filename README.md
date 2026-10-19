@@ -24,7 +24,7 @@ Press **▶ weave**. The ensemble is already patched and starts making music in 
   - **Phrase length** — 8 steps for tight 2-bar loops, 16 for standard 4-bar (default), 32 for 8-bar question/answer themes. Affects all players and Motif audition.
   - **✶ Evolve** — coach-guided mutation on every loop boundary (add/move/remove notes, anchors protected).
   - **⇅ Journey** — modulates through related keys every N loops (home → bright fifth → relative minor → warm fourth).
-- **Players** — Melody, Chords, Bass, Drums, Arp. Theory baked in: harmony-first generation against a seeded progression of real pitch-class chords built in the scale's parent mode (a pentatonic scale harmonizes with its parent's triads — C minor pent: Cm, Eb, Fm, Gm, Ab, Bb — while melody and arp stay on the five notes), chosen by function (tonic → subdominant → dominant) and closed by each mode's own cadence (bVII–i, IV–i, bII–i, II–I…), never a diminished triad; a **colour** on the Chords node (triads · 7th chords · quartal stacked fourths); the bass plays roots, perfect fifths and octaves; the Coach's voice-leading rules (stepwise motion, leap recovery, chord-tone pull, question/answer phrases, half & perfect cadences); role-aware drums (kick anchors, snare answers, hats fill). Melody can be theme-driven (see Motif node below).
+- **Players** — Melody, Chords, Bass, Drums, Arp. Theory baked in: harmony-first generation against a seeded progression of real pitch-class chords built in the scale's parent mode (a pentatonic scale harmonizes with its parent's triads — C minor pent: Cm, Eb, Fm, Gm, Ab, Bb — while melody and arp stay on the five notes), chosen by function (tonic → subdominant → dominant) and closed by each mode's own cadence (bVII–i, IV–i, bII–i, II–I…), never a diminished triad; a **colour** on the Chords node (triads · 7th chords · quartal stacked fourths) and a **spread** (close · open drop-2 · rootless), every chord voice-led to the nearest inversion under the melody; every role in a fixed pitch window whatever the key (melody tonic G3–F#4, pad C3–C5, bass E1–D3 with roots G1–G2 below the pad, arp C5–A6 (to A7 for a two-octave run), `register` shifts it by octaves); the bass plays roots, perfect fifths and octaves; the Coach's voice-leading rules (stepwise motion, leap recovery, chord-tone pull, question/answer phrases, half & perfect cadences); role-aware drums (kick anchors, snare answers, hats fill). Melody can be theme-driven (see Motif node below).
 - **✎ Motif node** (PRD §M1 melody quality) — pins the melody's rhythmic character and contour shape. Patch it into **melody.motif** and melodies use a Schoenberg-style sentence grammar (statement/restatement/contrast/cadence) with auditioned takes (every loop the best candidate survives). Shapes: arch (peak early) / rise (climb) / fall (descent) / wave (swell twice). Without a motif, melody is random; with one, it's thematic and memorable.
 - **Seeds** — visible on every player; same seed = same music (verified by test). **↻ re-roll** = new take.
 - **LFO node** — patch its Signal output into any player's **density** input; evaluated at loop boundaries (the modulated value shows live on the player, in blue).
@@ -71,6 +71,7 @@ src/theory/    pure, seeded, deterministic — the crown jewel (PRD M1)
   melody.ts      Coach scoring engine + Evolve
   motif.ts       Schoenberg sentence grammar + contour shapes + audition critic (PRD §M1)
   parts.ts       bass / chords / arp / drums generators
+  voicing.ts     pitch windows per role, voice-led chords, bass root chain, arp placement
   energy.ts      ensemble tension curve (CV source)
   theory.test.ts property tests: determinism, scale-lock, cadences, motif repetition
 src/audio/     wasmEngine.ts — main-thread controller: feeds the worklet one
@@ -79,6 +80,8 @@ src/audio/     wasmEngine.ts — main-thread controller: feeds the worklet one
 src/graph/     timeline.ts — the loop brain as a pure function renderBar(project, bar):
                arranger / journey / LFO / tension / evolve / glissando / routing →
                MIDI; shared by engine, previews, score tool and exports
+               resolve.ts — the shared resolver every bar goes through: melody →
+               chords voiced under it → bass under the pad → arp, in their windows
                zustand store, session helpers, routing, templates
 src/ui/        React Flow nodes (Conductor / Player / LFO / Tension), previews
 ```

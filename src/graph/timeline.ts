@@ -9,12 +9,14 @@
  */
 
 import type { Edge } from '@xyflow/react';
-import { buildJourney, eventMidis, roleContext, roleScale, type HarmonicContext } from '../theory/harmony';
+import { buildJourney, roleContext, roleScale, type HarmonicContext, type PitchedRole } from '../theory/harmony';
 import { evolveMelody, withGlissando, type NoteEvent } from '../theory/melody';
 import { computeEnergyCurve, energyScalar, type PitchedPart } from '../theory/energy';
 import type { DrumEvent } from '../theory/parts';
 import type { ScaleId } from '../theory/scales';
-import { computeBasePattern, computeContext, kickStepsOf, motifForPlayer, ROLE_OCTAVE } from './session';
+import { computeBasePattern, computeContext, kickStepsOf, motifForPlayer } from './session';
+import { resolveBar, type WireNote } from './resolve';
+import { CHORD_SPREADS, type ChordSpread } from '../theory/voicing';
 import { isRouted, PLAYER_KINDS, traceRoute, type Route } from './routing';
 import type { ArrangerData, ArrangerSection, ConductorState, LoomNode, Pattern, PlayerData, PlayerKind } from './types';
 
@@ -24,13 +26,7 @@ export interface TimelineProject {
   conductor: ConductorState;
 }
 
-/** worklet wire format: a pitched event resolved to MIDI */
-export interface WireNote {
-  step: number;
-  midis: number[];
-  vel: number;
-  lenSteps: number;
-}
+export type { WireNote } from './resolve';
 
 export interface WireDrum {
   step: number;
@@ -239,7 +235,7 @@ export class Timeline {
 
       const motif = kind === 'melody' ? motifForPlayer(nodes, edges, node.id) : null;
       const kickSteps = kind === 'bass' ? kicks : undefined;
-      const signature = JSON.stringify([kind, data.seed, eff, data.adventurousness, data.syncopation, data.register, data.articulation, ctx.keyIndex, ctx.scaleId, ctx.colour, ctx.chords.map((c) => c.degree), ctx.chordIdxAtStep, motif, kickSteps]);
+      const signature = JSON.stringify([kind, data.seed, eff, data.adventurousness, data.syncopation, data.register, data.articulation, data.octaves, ctx.keyIndex, ctx.scaleId, ctx.colour, ctx.chords.map((c) => c.degree), ctx.chordIdxAtStep, motif, kickSteps]);
       const changed = signature !== carry.signatures.get(node.id);
       const prev = carry.patterns.get(node.id);
 
@@ -271,7 +267,32 @@ export class Timeline {
     }
     carry.energy = computeEnergyCurve(ctx, pitched, drumEvents);
 
-    // resolve degrees to MIDI — only routed players sound (the cables are the signal flow)
+    // resolve degrees to MIDI through the shared resolver — only routed players sound (the cables are the signal flow)
+    const pitchedNodes = new Map<PitchedRole, LoomNode>();
+    for (const node of nodes) {
+      const kind = node.type as PlayerKind;
+      if (!parts[node.id] || kind === 'drums' || !PLAYER_KINDS.includes(kind)) continue;
+      // the routed node of a kind is the one that sounds; an unrouted one still voices the others
+      if (!pitchedNodes.has(kind) || isRouted(this.routes.get(node.id)!)) pitchedNodes.set(kind, node);
+    }
+    const resolveParts: Partial<Record<PitchedRole, NoteEvent[]>> = {};
+    const register: Partial<Record<PitchedRole, number>> = {};
+    for (const [kind, node] of pitchedNodes) {
+      let events = [...(parts[node.id] as NoteEvent[])].sort((a, b) => a.step - b.step);
+      if (this.routes.get(node.id)!.expression?.glissando && kind !== 'chords') events = withGlissando(events, roleScale(ctx, kind));
+      resolveParts[kind] = events;
+      register[kind] = Number(node.data.register ?? 0);
+    }
+    const spread = pitchedNodes.get('chords')?.data.spread;
+    const resolved = resolveBar({
+      ctx,
+      parts: resolveParts,
+      register,
+      spread: CHORD_SPREADS.includes(spread as ChordSpread) ? (spread as ChordSpread) : 'close',
+      arpOctaves: pitchedNodes.get('arp')?.data.octaves === 2 ? 2 : 1,
+      prev: null, // every bar starts a phrase until bar-based phrases land
+    }).notes;
+
     const patterns: WirePatterns = {};
     const audible: PlayerKind[] = [];
     for (const node of nodes) {
@@ -284,15 +305,7 @@ export class Timeline {
         patterns.drums = (pattern as DrumEvent[]).map((ev) => ({ step: ev.step, lane: ev.lane, vel: ev.velocity }));
         continue;
       }
-      const octave = ROLE_OCTAVE[kind] + Number(node.data.register ?? 0);
-      let events = [...(pattern as NoteEvent[])].sort((a, b) => a.step - b.step);
-      if (route.expression?.glissando && kind !== 'chords') events = withGlissando(events, roleScale(ctx, kind));
-      patterns[kind] = events.map((ev) => ({
-        step: ev.step,
-        midis: eventMidis(ctx, kind, ev.degree, octave),
-        vel: ev.velocity,
-        lenSteps: ev.lengthSteps,
-      }));
+      if (pitchedNodes.get(kind) === node) patterns[kind] = resolved[kind] ?? [];
     }
 
     return {
