@@ -1,14 +1,11 @@
 /**
- * Standard MIDI File export (PRD §6.10 / M4 capture slice): the current loop's
- * generated patterns as a type-1 .mid — one track per player, drums on ch10.
+ * Standard MIDI File export (PRD §6.10 / M4 capture slice): timeline bars as a
+ * type-1 .mid — one track per sounding player, drums on ch10. The notes are the
+ * bars' resolved patterns, so the file holds exactly what playback sounds.
  */
 
-import type { HarmonicContext } from '../theory/harmony';
-import { eventMidis } from '../theory/harmony';
-import type { NoteEvent } from '../theory/melody';
-import type { DrumEvent } from '../theory/parts';
 import type { PlayerKind } from '../graph/types';
-import { ROLE_OCTAVE } from '../graph/session';
+import type { BarRender, WireDrum, WireNote } from '../graph/timeline';
 
 const PPQ = 480;
 const TICKS_PER_STEP = PPQ / 4; // 16th notes
@@ -48,15 +45,14 @@ function trackChunk(events: RawEvent[], name: string): number[] {
   return [...str('MTrk'), (len >> 24) & 0xff, (len >> 16) & 0xff, (len >> 8) & 0xff, len & 0xff, ...body];
 }
 
-export interface MidiPart {
-  kind: PlayerKind;
-  pattern: NoteEvent[] | DrumEvent[];
-  register: number;
-}
+export type MidiBar = Pick<BarRender, 'steps' | 'patterns' | 'audible'>;
 
-export function buildMidi(ctx: HarmonicContext, parts: MidiPart[], bpm: number, loops = 1): Uint8Array {
+export function buildMidi(bars: MidiBar[], bpm: number): Uint8Array {
+  const kinds: PlayerKind[] = [];
+  for (const bar of bars) for (const kind of bar.audible) if (!kinds.includes(kind)) kinds.push(kind);
+
   const chunks: number[] = [];
-  const ntrks = parts.length + 1;
+  const ntrks = kinds.length + 1;
   chunks.push(...str('MThd'), 0, 0, 0, 6, 0, 1, (ntrks >> 8) & 0xff, ntrks & 0xff, (PPQ >> 8) & 0xff, PPQ & 0xff);
 
   // tempo track
@@ -69,37 +65,37 @@ export function buildMidi(ctx: HarmonicContext, parts: MidiPart[], bpm: number, 
   );
 
   let channel = 0;
-  for (const part of parts) {
+  for (const kind of kinds) {
     const events: RawEvent[] = [];
-    const ch = part.kind === 'drums' ? 9 : channel++;
+    const ch = kind === 'drums' ? 9 : channel++;
     if (channel === 9) channel++; // skip GM drum channel for pitched parts
-    for (let loop = 0; loop < loops; loop++) {
-      const base = loop * ctx.steps * TICKS_PER_STEP;
-      if (part.kind === 'drums') {
-        for (const ev of part.pattern as DrumEvent[]) {
+    let base = 0;
+    for (const bar of bars) {
+      const pattern = bar.audible.includes(kind) ? bar.patterns[kind] : undefined;
+      if (kind === 'drums') {
+        for (const ev of (pattern ?? []) as WireDrum[]) {
           const tick = base + ev.step * TICKS_PER_STEP;
           const note = GM_DRUM[ev.lane] ?? 42;
-          const vel = Math.round(ev.velocity * 127) & 0x7f;
+          const vel = Math.round(ev.vel * 127) & 0x7f;
           events.push({ tick, order: 1, bytes: [0x90 | ch, note, vel] });
           events.push({ tick: tick + Math.floor(TICKS_PER_STEP / 2), order: 0, bytes: [0x80 | ch, note, 0] });
         }
       } else {
-        const octave = ROLE_OCTAVE[part.kind] + part.register;
-        for (const ev of part.pattern as NoteEvent[]) {
+        for (const ev of (pattern ?? []) as WireNote[]) {
           const tick = base + ev.step * TICKS_PER_STEP;
-          const midis = eventMidis(ctx, part.kind, ev.degree, octave);
-          const vel = Math.round(ev.velocity * 127) & 0x7f;
+          const vel = Math.round(ev.vel * 127) & 0x7f;
           // lengths can be fractional (bass articulation); SMF deltas are integers
-          const durTicks = Math.max(1, Math.round(ev.lengthSteps * TICKS_PER_STEP) - 4);
-          for (const midi of midis) {
+          const durTicks = Math.max(1, Math.round(ev.lenSteps * TICKS_PER_STEP) - 4);
+          for (const midi of ev.midis) {
             const clamped = Math.max(0, Math.min(127, midi));
             events.push({ tick, order: 1, bytes: [0x90 | ch, clamped, vel] });
             events.push({ tick: tick + durTicks, order: 0, bytes: [0x80 | ch, clamped, 0] });
           }
         }
       }
+      base += bar.steps * TICKS_PER_STEP;
     }
-    chunks.push(...trackChunk(events, part.kind));
+    chunks.push(...trackChunk(events, kind));
   }
   return new Uint8Array(chunks);
 }

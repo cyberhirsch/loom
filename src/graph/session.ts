@@ -1,6 +1,6 @@
 /**
- * Shared session helpers: harmonic context + base pattern computation.
- * Used by both the audio engine and node previews so they always agree.
+ * Shared session helpers: harmonic context + base pattern computation,
+ * composed into bars by the timeline (src/graph/timeline.ts).
  * Harmony-first (PRD §5.2): the Chords player's seed drives the progression.
  */
 
@@ -19,12 +19,6 @@ export function computeContext(conductor: ConductorState, chordsSeed: number, co
 /** A Chords node's colour, falling back to plain triads for absent or unknown values. */
 export function chordColourOf(colour: unknown): ChordColour {
   return CHORD_COLOURS.includes(colour as ChordColour) ? (colour as ChordColour) : 'triad';
-}
-
-/** The patch's harmonic context: its Chords node's seed and colour drive the shared progression. */
-export function contextFor(conductor: ConductorState, nodes: LoomNode[]): HarmonicContext {
-  const chords = nodes.find((n) => n.type === 'chords');
-  return computeContext(conductor, chords ? Number(chords.data.seed) : 1, chords?.data.colour);
 }
 
 /** The Motif node feeding a player's motif input, if any (PRD §5.2 expose-on-demand). */
@@ -47,15 +41,6 @@ export interface PatternOpts {
 
 export function kickStepsOf(drums: readonly DrumEvent[]): number[] {
   return drums.filter((e) => e.lane === 0).map((e) => e.step);
-}
-
-/** Kicks of the patch's drum player as the bass hears them (its frozen take, else its base pattern). */
-export function drumKicks(nodes: LoomNode[], ctx: HarmonicContext): number[] | undefined {
-  const node = nodes.find((n) => n.type === 'drums');
-  if (!node) return undefined;
-  const data = node.data as unknown as PlayerData;
-  const take = data.frozen && Array.isArray(data.frozenPattern) ? (data.frozenPattern as DrumEvent[]) : null;
-  return kickStepsOf(take ?? (computeBasePattern('drums', ctx, data) as DrumEvent[]));
 }
 
 export function computeBasePattern(

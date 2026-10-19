@@ -1,5 +1,6 @@
 import { useLoomStore } from '../graph/store';
 import type { ArrangerData } from '../graph/types';
+import { arrangerPosition } from '../graph/timeline';
 
 /**
  * Timeline view (PRD §6.6): a view over the structure node — renders the
@@ -16,23 +17,13 @@ export function TimelineStrip() {
 
   const enabled = Boolean(arranger?.enabled) && Array.isArray(arranger?.sections) && arranger!.sections.length > 0;
   const sections = enabled ? arranger!.sections : [{ name: 'loop', loops: 1, intensity: 1, journeyStop: -1 }];
-  const total = sections.reduce((a, s) => a + Math.max(1, s.loops), 0);
 
-  // song position 0..1 across the section cycle (audible position, not the
-  // engine's double-buffered lookahead)
+  // song position 0..1 across the section cycle; loopCount and the active section
+  // come from the bar the worklet reports sounding
   let pos = 0;
-  let audibleSection = activeSection;
   if (playing && loopCount > 0) {
-    const loopInCycle = (loopCount - 1) % total;
-    pos = (loopInCycle + Math.max(0, currentStep) / steps) / total;
-    let acc = 0;
-    for (let i = 0; i < sections.length; i++) {
-      acc += Math.max(1, sections[i].loops);
-      if (loopInCycle < acc) {
-        audibleSection = i;
-        break;
-      }
-    }
+    const { cycleBar, cycleBars } = arrangerPosition(sections, loopCount - 1);
+    pos = (cycleBar + Math.max(0, currentStep) / steps) / cycleBars;
   }
 
   return (
@@ -40,7 +31,7 @@ export function TimelineStrip() {
       {sections.map((s, i) => (
         <div
           key={i}
-          className={`timeline-block${enabled && i === (playing ? audibleSection : activeSection) ? ' is-active' : ''}`}
+          className={`timeline-block${enabled && i === activeSection ? ' is-active' : ''}`}
           style={{ flexGrow: Math.max(1, s.loops) }}
         >
           <span>{s.name}</span>

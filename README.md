@@ -12,6 +12,7 @@ npm run dev        # → http://localhost:5175
 npm test           # theory-engine property tests
 npm run build      # production build
 npm run build:dsp  # rebuild the Rust DSP core → public/loom-dsp.wasm (needs rustup wasm32 target)
+npm run score -- --template techno --bars 14   # print exactly what the engine plays + metrics (--sweep N, --json)
 ```
 
 Press **▶ weave**. The ensemble is already patched and starts making music in C Minor Pentatonic.
@@ -38,9 +39,9 @@ Press **▶ weave**. The ensemble is already patched and starts making music in 
 - **Live pattern previews** in every player node, with playhead.
 - **LoomScript** (`⟨⟩ script` in the top bar) — the **whole patch as text**, readable and editable by you or any LLM: every node, knob, cable, frozen take, and scene as a line-based DSL ([spec](docs/LOOMSCRIPT.md)). It IS the save format (autosave persists script text; round-trip is idempotent by test), the default ensemble is defined as a script, and `.loom` files save/load through the panel. Typed-cable mistakes come back with line numbers and guidance. A repo skill (`.claude/skills/loomscript`) teaches Claude Code to write patches.
 - **Autosave** — the patch persists across reloads as LoomScript in localStorage; **reset** in the top bar restores the default ensemble.
-- **↧ midi** — export the current loop (4 repeats) as a Standard MIDI File: one track per player, drums on GM channel 10. Deterministic (same seed = same file, by test) — open it in any DAW.
+- **↧ midi** — export the first 4 loops of the timeline as a Standard MIDI File, exactly the notes playback sounds (arranger, journey, evolve, glissando included; muted and unrouted parts left out): one track per player, drums on GM channel 10. Deterministic (same seed = same file, by test) — open it in any DAW.
 - **❄ freeze** (capture, PRD §5.2) — capture a player's current take: frozen players play it verbatim, immune to evolve/re-generation (it still transposes with the journey), and the take persists across reloads. Unfreeze to rejoin the generative flow.
-- **↧ wav** (PRD §6.10 offline bounce) — renders the loop through the same WASM DSP in an `OfflineAudioContext`, ~30× faster than real time, to a 16-bit stereo WAV.
+- **↧ wav** (PRD §6.10 offline bounce) — renders the first 4 loops of the timeline, then lets the tails ring out, through the same WASM DSP in an `OfflineAudioContext`, ~30× faster than real time, to a 16-bit stereo WAV. It sends the worklet the same messages as live playback (synth voices, sends, glide, delay, reverb, master), so the bounce is sample-identical to what you hear (by test).
 - **Mixer bar** (PRD §6.8) — channel strips derived from the graph; strips and node knobs edit the same store, so they're bidirectional by construction.
 - **Arranger node** (PRD §5.2 generative structure) — a sequencer of sections (name, length in loops, intensity, journey stop). When *conducting*, sections scale every player's density and advance the Conductor's journey at boundaries: songs get shape (sparse → full → lift) without placing a single note.
 - **Ensemble templates** (PRD §6.11) — *Ambient garden* (Lydian, tension-fed melody, evolving), *Lo-fi trio* (Dorian, swung kit), *Techno engine* (128 bpm, Arranger conducting groove/build/peak/breakdown). Pick one from the top bar and press weave.
@@ -72,14 +73,17 @@ src/theory/    pure, seeded, deterministic — the crown jewel (PRD M1)
   parts.ts       bass / chords / arp / drums generators
   energy.ts      ensemble tension curve (CV source)
   theory.test.ts property tests: determinism, scale-lock, cadences, motif repetition
-src/audio/     wasmEngine.ts — main-thread controller: the "loop brain"
-               (journey / evolve / LFO / tension), resolves theory → MIDI,
-               talks to the worklet over its port
-src/graph/     zustand store, session helpers (ctx shared by engine & previews)
+src/audio/     wasmEngine.ts — main-thread controller: feeds the worklet one
+               timeline bar at a time over its port, follows the bar it echoes
+               messages.ts — the worklet message stream (live = WAV bounce)
+src/graph/     timeline.ts — the loop brain as a pure function renderBar(project, bar):
+               arranger / journey / LFO / tension / evolve / glissando / routing →
+               MIDI; shared by engine, previews, score tool and exports
+               zustand store, session helpers, routing, templates
 src/ui/        React Flow nodes (Conductor / Player / LFO / Tension), previews
 ```
 
-**Engine data flow:** theory (main thread, pure TS) → concrete MIDI patterns → worklet (sample-accurate step clock) → Rust/WASM `render()` → speakers. Each loop's patterns are computed while the previous one plays (double-buffered). Tone.js is gone entirely — the PRD §8 rule ("never build the production engine on Web Audio nodes") is now enforced by the codebase itself.
+**Engine data flow:** theory (main thread, pure TS) → `renderBar` (src/graph/timeline.ts) → concrete MIDI patterns tagged with their bar → worklet (sample-accurate step clock) → Rust/WASM `render()` → speakers. Each bar is computed while the previous one plays (double-buffered); the worklet echoes the bar it starts sounding and the UI (section, key, previews) follows that echo, so labels change with the audio. Tone.js is gone entirely — the PRD §8 rule ("never build the production engine on Web Audio nodes") is now enforced by the codebase itself.
 
 ## M0 exit test (PRD §10)
 

@@ -2,10 +2,9 @@ import { ReactFlow, ReactFlowProvider, Background, Controls, MiniMap, Background
 import '@xyflow/react/dist/style.css';
 import { useLoomStore } from '../graph/store';
 import { engine } from '../audio/wasmEngine';
-import { contextFor, computeBasePattern, drumKicks } from '../graph/session';
-import { buildMidi, downloadMidi, type MidiPart } from '../export/midi';
+import { renderTimeline } from '../graph/timeline';
+import { buildMidi, downloadMidi } from '../export/midi';
 import { bounceWav } from '../export/wav';
-import type { PlayerData, PlayerKind } from '../graph/types';
 import { ConductorNode } from '../ui/nodes/ConductorNode';
 import { ArrangerNode } from '../ui/nodes/ArrangerNode';
 import { PlayerNode } from '../ui/nodes/PlayerNode';
@@ -91,19 +90,8 @@ function Shell() {
   };
 
   const exportMidi = () => {
-    const s = useLoomStore.getState();
-    const ctx = contextFor(s.conductor, s.nodes);
-    const kinds: PlayerKind[] = ['melody', 'chords', 'bass', 'drums', 'arp'];
-    const parts: MidiPart[] = [];
-    for (const node of s.nodes) {
-      if (!kinds.includes(node.type as PlayerKind) || node.data.mute) continue;
-      const kind = node.type as PlayerKind;
-      const pattern =
-        s.patterns[node.id] ??
-        computeBasePattern(kind, ctx, node.data as unknown as PlayerData, { kickSteps: kind === 'bass' ? drumKicks(s.nodes, ctx) : undefined });
-      parts.push({ kind, pattern, register: Number(node.data.register ?? 0) });
-    }
-    downloadMidi(buildMidi(ctx, parts, s.conductor.tempo, 4), 'loom-loop.mid');
+    const { nodes, edges, conductor } = useLoomStore.getState();
+    downloadMidi(buildMidi(renderTimeline({ nodes, edges, conductor }, 0, 4), conductor.tempo), 'loom-loop.mid');
   };
 
   return (
@@ -114,8 +102,8 @@ function Shell() {
           {playing ? '■ stop' : '▶ weave'}
         </button>
         <AddNodeMenu />
-        <button className="play-btn" onClick={exportMidi} title="Export the current loop (4 repeats) as a Standard MIDI File">↧ midi</button>
-        <button className="play-btn" onClick={() => void bounceWav(4)} title="Bounce the current loop (4 repeats) to WAV — offline render through the WASM DSP, faster than real time">↧ wav</button>
+        <button className="play-btn" onClick={exportMidi} title="Export the first 4 loops of the timeline, exactly as playback sounds them, as a Standard MIDI File">↧ midi</button>
+        <button className="play-btn" onClick={() => void bounceWav(4)} title="Bounce the first 4 loops of the timeline to WAV — the same notes and sound as playback, rendered offline through the WASM DSP, faster than real time">↧ wav</button>
         <button
           className="play-btn"
           onClick={() => void handleSave()}

@@ -1,115 +1,35 @@
 /**
  * Loom M2 engine controller (PRD §8/§10 M2): Rust→WASM DSP core hosted in an
- * AudioWorklet. This main-thread side owns the "loop brain" — journey, evolve,
- * LFO/Tension modulation, energy — and resolves theory (degrees) into concrete
- * MIDI notes posted to the worklet, which owns the sample clock.
+ * AudioWorklet. This main-thread side feeds the worklet one timeline bar at a
+ * time (src/graph/timeline.ts, the loop brain) and keeps the UI on the bar the
+ * worklet echoes as sounding; the worklet owns the sample clock.
  */
 
-import { useLoomStore, densityModulations } from '../graph/store';
-import { contextFor, computeBasePattern, kickStepsOf, motifForPlayer, ROLE_OCTAVE } from '../graph/session';
-import { buildJourney, eventMidis, roleContext, roleScale, type HarmonicContext, type PitchedRole } from '../theory/harmony';
-import { evolveMelody, withGlissando, type NoteEvent } from '../theory/melody';
-import { computeEnergyCurve, energyScalar, type PitchedPart } from '../theory/energy';
-import type { DrumEvent } from '../theory/parts';
-import type { ArrangerData, DelayData, ExpressionData, OutData, PlayerData, PlayerKind, ReverbData, SynthData } from '../graph/types';
-import type { Edge } from '@xyflow/react';
-import type { LoomNode } from '../graph/types';
+import { useLoomStore } from '../graph/store';
+import { mixMessages, routingMessages } from '../graph/routing';
+import { renderBar, type BarRender, type TimelineProject } from '../graph/timeline';
+import { barMessage, sessionMessages } from './messages';
 
-const PLAYER_KINDS: PlayerKind[] = ['melody', 'chords', 'bass', 'drums', 'arp'];
-
-/** default per-kind FX send levels, applied when the kind's route passes that FX node */
-const REV_SEND: Record<PlayerKind, number> = { melody: 0.35, chords: 0.45, bass: 0.1, drums: 0.15, arp: 0.4 };
-const DEL_SEND: Record<PlayerKind, number> = { melody: 0.3, chords: 0.15, bass: 0.1, drums: 0.05, arp: 0.35 };
-
-/** Where a player's notes end up (PRD §5: the patch IS the signal flow).
- *  notes-out → (Expression…) → Synth/Kit → signal-out → (FX…) → Out. */
-interface Route {
-  synth: SynthData | null;
-  isKit: boolean;
-  expression: ExpressionData | null;
-  hasDelay: boolean;
-  hasReverb: boolean;
-  toOut: boolean;
+/** what the engine needs of an AudioWorkletNode's port (a fake one runs it headless) */
+export interface EnginePort {
+  postMessage(msg: unknown): void;
+  onmessage: ((e: { data: unknown }) => void) | null;
 }
 
-function traceRoute(playerId: string, nodes: LoomNode[], edges: Edge[]): Route {
-  const route: Route = { synth: null, isKit: false, expression: null, hasDelay: false, hasReverb: false, toOut: false };
-  const byId = new Map(nodes.map((n) => [n.id, n]));
-  // note path: through expression nodes until an instrument
-  let cur = playerId;
-  const seen = new Set<string>();
-  while (!seen.has(cur)) {
-    seen.add(cur);
-    const edge = edges.find((e) => e.source === cur && e.sourceHandle === 'notes-out');
-    if (!edge) return route;
-    const node = byId.get(edge.target);
-    if (!node) return route;
-    if (node.type === 'expression') {
-      route.expression = node.data as unknown as ExpressionData;
-      cur = node.id;
-    } else if (node.type === 'synth' || node.type === 'kit') {
-      route.synth = node.type === 'synth' ? (node.data as unknown as SynthData) : null;
-      route.isKit = node.type === 'kit';
-      cur = node.id;
-      break;
-    } else {
-      return route;
-    }
-  }
-  // signal path: through fx until out
-  seen.clear();
-  while (!seen.has(cur)) {
-    seen.add(cur);
-    const edge = edges.find((e) => e.source === cur && e.sourceHandle === 'signal-out');
-    if (!edge) return route;
-    const node = byId.get(edge.target);
-    if (!node) return route;
-    if (node.type === 'delay') route.hasDelay = true;
-    else if (node.type === 'reverb') route.hasReverb = true;
-    else if (node.type === 'out') {
-      route.toOut = true;
-      return route;
-    } else return route;
-    cur = node.id;
-  }
-  return route;
-}
+const projectOf = (): TimelineProject => {
+  const { nodes, edges, conductor } = useLoomStore.getState();
+  return { nodes, edges, conductor };
+};
 
-interface WireNote {
-  step: number;
-  midis: number[];
-  vel: number;
-  lenSteps: number;
-}
-
-type WirePatterns = Partial<Record<PlayerKind, WireNote[] | DrumEvent[]>>;
-
-function dbToLinear(db: number): number {
-  return Math.pow(10, db / 20);
-}
-
-/** Synth node → worklet 'voice' message; decay/sustain left off the node (-1) keep the DSP's per-kind default */
-function voiceMessage(kind: PlayerKind | 'live', s: SynthData) {
-  const opt = (v: unknown) => (v === undefined || v === null || v === '' ? -1 : Number(v));
-  return {
-    type: 'voice', kind, wave: Number(s.wave), attack: Number(s.attack), decay: opt(s.decay), sustain: opt(s.sustain),
-    release: Number(s.release), cutoff: Number(s.cutoff),
-  };
-}
-
-class WasmEngine {
+export class WasmEngine {
   private ctx: AudioContext | null = null;
   private node: AudioWorkletNode | null = null;
+  private port: EnginePort | null = null;
   private analyser: AnalyserNode | null = null;
-  private patterns = new Map<string, NoteEvent[] | DrumEvent[]>();
-  private signatures = new Map<string, string>();
-  private journeyIndex = 0;
-  private evolveGeneration = 0;
-  private hctx: HarmonicContext | null = null;
   private unsubscribe: (() => void) | null = null;
-  /** live routing per player kind, derived from the cables */
-  private routes = new Map<PlayerKind, Route>();
   private routingSig = '';
+  /** bars posted but not yet sounding, keyed by bar: the UI shows each when the worklet echoes it */
+  private inFlight = new Map<number, BarRender>();
 
   /** Bring up the audio stack without starting the transport — the live MIDI
    *  path plays through a stopped transport (render always runs). Must be
@@ -127,32 +47,42 @@ class WasmEngine {
       this.node.connect(this.analyser);
       this.analyser.connect(this.ctx.destination);
       const bytes = await (await fetch(new URL('loom-dsp.wasm', document.baseURI).href)).arrayBuffer();
+      const port = this.node.port;
       await new Promise<void>((resolve) => {
-        this.node!.port.onmessage = (e) => {
+        port.onmessage = (e) => {
           if (e.data.type === 'ready') resolve();
-          this.onMessage(e.data);
         };
-        this.node!.port.postMessage({ type: 'wasm', bytes });
+        port.postMessage({ type: 'wasm', bytes });
       });
-      this.node.port.onmessage = (e) => this.onMessage(e.data);
-      this.subscribeStore();
-      this.syncMix();
+      this.connectPort(port as unknown as EnginePort);
+      for (const msg of mixMessages(useLoomStore.getState().nodes)) this.post(msg);
       this.syncRouting(true);
     }
     await this.ctx.resume();
   }
 
+  /** Attach the worklet's port and follow the store (ensureAudio does this; tests pass a fake port). */
+  connectPort(port: EnginePort) {
+    this.port = port;
+    port.onmessage = (e) => this.onMessage(e.data as { type: string });
+    this.unsubscribe?.();
+    this.subscribeStore();
+  }
+
   async start() {
     await this.ensureAudio();
+    this.startTransport();
+  }
 
-    const store = useLoomStore.getState();
-    this.post({ type: 'tempo', bpm: store.conductor.tempo });
-    this.post({ type: 'steps', value: Number(store.conductor.steps) || 16 });
-    this.syncMix();
-    this.syncRouting(true);
-    this.refreshLoop(true);
+  /** From bar 0: session state, the first bar to play at once, then the clock. */
+  startTransport() {
+    const project = projectOf();
+    for (const msg of sessionMessages(project)) this.post(msg);
+    this.routingSig = routingMessages(project.nodes, project.edges).signature;
+    this.inFlight.clear();
+    this.sendBar(0, true);
     this.post({ type: 'start' });
-    store.setPlaying(true);
+    useLoomStore.getState().setPlaying(true);
   }
 
   // ---- live MIDI/MPE input (MIDI Input node) -------------------------------
@@ -187,10 +117,16 @@ class WasmEngine {
   }
 
   private post(msg: unknown) {
-    this.node?.port.postMessage(msg);
+    this.port?.postMessage(msg);
   }
 
-  private onMessage(msg: { type: string; step?: number; loop?: number }) {
+  private sendBar(absBar: number, immediate: boolean) {
+    const bar = renderBar(projectOf(), absBar);
+    this.inFlight.set(absBar, bar);
+    this.post(barMessage(bar, immediate));
+  }
+
+  private onMessage(msg: { type: string; step?: number; loop?: number; absBar?: number }) {
     if (msg.type === 'debug-nan') {
       console.error('[loom] NaN in worklet output:', JSON.stringify(msg));
       return;
@@ -198,11 +134,29 @@ class WasmEngine {
     const store = useLoomStore.getState();
     if (msg.type === 'step' && msg.step !== undefined) {
       store.setStep(msg.step);
-    } else if (msg.type === 'loop' && msg.loop !== undefined) {
-      store.setLoopCount(msg.loop);
-      // compute the NEXT loop's patterns while this one plays (double-buffered)
-      this.refreshLoop(false);
+    } else if (msg.type === 'loop' && msg.absBar !== undefined) {
+      // the worklet just started sounding bar `absBar`: show it, then queue the next one (double-buffered)
+      this.showBar(msg.absBar);
+      this.sendBar(msg.absBar + 1, false);
     }
+  }
+
+  /** Displays follow the audio: section, key, previews and modulation of the bar now sounding. */
+  private showBar(absBar: number) {
+    const bar = this.inFlight.get(absBar) ?? renderBar(projectOf(), absBar);
+    for (const k of [...this.inFlight.keys()]) if (k <= absBar) this.inFlight.delete(k);
+    const store = useLoomStore.getState();
+    store.setLoopCount(absBar + 1);
+    if (store.arrangerSection !== bar.sectionId) store.setArrangerSection(bar.sectionId);
+    const c = store.conductor;
+    if (c.liveKeyIndex !== bar.keyIndex || c.liveScaleId !== bar.scaleId || c.journeyLabel !== bar.journeyLabel) {
+      store.updateConductor({ liveKeyIndex: bar.keyIndex, liveScaleId: bar.scaleId, journeyLabel: bar.journeyLabel });
+    }
+    for (const [id, pattern] of Object.entries(bar.parts)) {
+      if (useLoomStore.getState().patterns[id] !== pattern) store.publishPattern(id, pattern);
+    }
+    for (const [id, value] of Object.entries(bar.modDensity)) store.publishEffDensity(id, value);
+    store.publishEnergy(bar.energy);
   }
 
   private subscribeStore() {
@@ -213,242 +167,18 @@ class WasmEngine {
       if (state.conductor.steps !== prev.conductor.steps) {
         this.post({ type: 'steps', value: Number(state.conductor.steps) || 16 });
       }
-      if (state.nodes !== prev.nodes) this.syncMix(prev.nodes);
+      if (state.nodes !== prev.nodes) for (const msg of mixMessages(state.nodes, prev.nodes)) this.post(msg);
       if (state.nodes !== prev.nodes || state.edges !== prev.edges) this.syncRouting(false);
     });
   }
 
-  private syncMix(prevNodes?: typeof useLoomStore extends never ? never : ReturnType<typeof useLoomStore.getState>['nodes']) {
-    for (const node of useLoomStore.getState().nodes) {
-      if (!PLAYER_KINDS.includes(node.type as PlayerKind)) continue;
-      const prev = prevNodes?.find((n) => n.id === node.id);
-      if (!prev || prev.data.volume !== node.data.volume) {
-        this.post({ type: 'gain', kind: node.type, value: dbToLinear(Number(node.data.volume)) * 0.4 });
-      }
-    }
-  }
-
-  /** Read the cables and make the DSP obey them: unrouted players are silent,
-   *  Synth/Expression/FX/Out node params land on the WASM core. */
+  /** Make the DSP obey the cables (unrouted players are silent; node params land on the core). */
   private syncRouting(force: boolean) {
     const { nodes, edges } = useLoomStore.getState();
-    const parts: unknown[] = [];
-    const next = new Map<PlayerKind, Route>();
-    for (const node of nodes) {
-      if (!PLAYER_KINDS.includes(node.type as PlayerKind)) continue;
-      const kind = node.type as PlayerKind;
-      const route = traceRoute(node.id, nodes, edges);
-      next.set(kind, route);
-      parts.push([kind, node.data.mute, route]);
-    }
-    // MIDI Input node: same law as players — its live notes only sound if its
-    // cable chain reaches a synth whose signal reaches Out
-    const midiNode = nodes.find((n) => n.type === 'midiin');
-    const liveRoute = midiNode ? traceRoute(midiNode.id, nodes, edges) : null;
-    parts.push(liveRoute);
-    const delayNode = nodes.find((n) => n.type === 'delay');
-    const reverbNode = nodes.find((n) => n.type === 'reverb');
-    const outNode = nodes.find((n) => n.type === 'out');
-    parts.push(delayNode?.data, reverbNode?.data, outNode?.data);
-    const sig = JSON.stringify(parts);
-    if (!force && sig === this.routingSig) return;
-    this.routingSig = sig;
-    this.routes = next;
-
-    if (liveRoute) {
-      const audible = liveRoute.toOut && liveRoute.synth !== null;
-      this.post({ type: 'mute', kind: 'live', value: !audible });
-      if (liveRoute.synth) this.post(voiceMessage('live', liveRoute.synth));
-      this.post({ type: 'sends', kind: 'live', rev: liveRoute.hasReverb ? 0.3 : 0, del: liveRoute.hasDelay ? 0.25 : 0 });
-    } else {
-      this.post({ type: 'mute', kind: 'live', value: true });
-    }
-
-    for (const [kind, route] of next) {
-      const audible = route.toOut && (route.synth !== null || route.isKit);
-      const data = useLoomStore.getState().nodes.find((n) => n.type === kind)?.data;
-      this.post({ type: 'mute', kind, value: Boolean(data?.mute) || !audible });
-      if (route.synth) this.post(voiceMessage(kind, route.synth));
-      this.post({
-        type: 'sends',
-        kind,
-        rev: route.hasReverb ? REV_SEND[kind] : 0,
-        del: route.hasDelay ? DEL_SEND[kind] : 0,
-      });
-      this.post({ type: 'glide', kind, seconds: route.expression ? Number(route.expression.portamento) * 0.3 : 0 });
-    }
-    if (delayNode) {
-      const d = delayNode.data as unknown as DelayData;
-      this.post({ type: 'delay', division: Number(d.division), feedback: Number(d.feedback), mix: Number(d.mix) });
-    }
-    if (reverbNode) {
-      this.post({ type: 'reverb', mix: Number((reverbNode.data as unknown as ReverbData).mix) });
-    }
-    if (outNode) {
-      this.post({ type: 'master', value: dbToLinear(Number((outNode.data as unknown as OutData).level)) });
-    }
-  }
-
-  /** The loop brain — identical musical behavior to M0, now feeding the WASM core. */
-  private refreshLoop(force: boolean) {
-    const store = useLoomStore.getState();
-    const { conductor, nodes, edges, loopCount } = store;
-
-    // Arranger (PRD §5.2): generative structure — sections set intensity and
-    // advance the Conductor's journey at section boundaries. When enabled it owns the journey.
-    const arrangerNode = nodes.find((n) => n.type === 'arranger');
-    const arranger = arrangerNode?.data as unknown as ArrangerData | undefined;
-    let sectionIntensity = 1;
-    let arrangerActive = false;
-    if (arranger?.enabled && Array.isArray(arranger.sections) && arranger.sections.length > 0) {
-      arrangerActive = true;
-      const total = arranger.sections.reduce((a, s) => a + Math.max(1, s.loops), 0);
-      let pos = loopCount % total;
-      let idx = 0;
-      for (let i = 0; i < arranger.sections.length; i++) {
-        const len = Math.max(1, arranger.sections[i].loops);
-        if (pos < len) {
-          idx = i;
-          break;
-        }
-        pos -= len;
-      }
-      const section = arranger.sections[idx];
-      store.setArrangerSection(idx);
-      sectionIntensity = section.intensity;
-      const journey = buildJourney(conductor.scaleId);
-      const stop = section.journeyStop >= 0 ? journey[section.journeyStop % journey.length] : journey[0];
-      if (
-        conductor.liveKeyIndex !== (((conductor.keyIndex + stop.offset) % 12) + 12) % 12 ||
-        conductor.liveScaleId !== stop.scaleId
-      ) {
-        store.updateConductor({
-          liveKeyIndex: (((conductor.keyIndex + stop.offset) % 12) + 12) % 12,
-          liveScaleId: stop.scaleId,
-          journeyLabel: section.journeyStop >= 0 ? stop.label : 'home',
-        } as never);
-      }
-    } else {
-      if (store.arrangerSection !== -1) store.setArrangerSection(-1);
-      if (conductor.journeyOn && loopCount > 0 && loopCount % conductor.modEvery === 0) {
-        const journey = buildJourney(conductor.scaleId);
-        this.journeyIndex = (this.journeyIndex + 1) % journey.length;
-        const stop = journey[this.journeyIndex];
-        store.updateConductor({
-          liveKeyIndex: (((conductor.keyIndex + stop.offset) % 12) + 12) % 12,
-          liveScaleId: stop.scaleId,
-          journeyLabel: stop.label,
-        } as never);
-      } else if (!conductor.journeyOn && this.journeyIndex !== 0) {
-        this.journeyIndex = 0;
-      }
-    }
-
-    const fresh = useLoomStore.getState();
-    const ctx = contextFor(fresh.conductor, fresh.nodes);
-    const mods = densityModulations(nodes, edges);
-
-    // ensemble energy of the previous loop (Tension CV source)
-    const pitched: PitchedPart[] = [];
-    let drumEvents: DrumEvent[] | null = null;
-    for (const node of fresh.nodes) {
-      if (!PLAYER_KINDS.includes(node.type as PlayerKind) || !this.patterns.has(node.id)) continue;
-      if (node.type === 'drums') drumEvents = this.patterns.get(node.id) as DrumEvent[];
-      else pitched.push({ role: node.type as PitchedRole, events: this.patterns.get(node.id) as NoteEvent[] });
-    }
-    if (this.hctx) {
-      const curve = computeEnergyCurve(this.hctx, pitched, drumEvents);
-      fresh.publishEnergy(curve);
-    }
-    const energy = energyScalar(fresh.energyCurve);
-
-    // drums first: the bass locks to the kicks they play this loop
-    const players = fresh.nodes.filter((n) => PLAYER_KINDS.includes(n.type as PlayerKind));
-    players.sort((a, b) => Number(b.type === 'drums') - Number(a.type === 'drums'));
-    let kicks: number[] | undefined;
-    for (const node of players) {
-      const kind = node.type as PlayerKind;
-      const data = node.data as unknown as PlayerData;
-
-      let effDensity = data.density;
-      const mod = mods.find((m) => m.playerId === node.id);
-      if (mod) {
-        const source = fresh.nodes.find((n) => n.id === mod.sourceId);
-        if (source?.type === 'lfo') {
-          effDensity = data.density + Number(source.data.depth) * Math.sin(2 * Math.PI * Number(source.data.rate) * loopCount);
-        } else if (source?.type === 'tension') {
-          effDensity = data.density + Number(source.data.depth) * (0.5 - energy);
-        }
-        effDensity = Math.min(1, Math.max(0.05, effDensity));
-        fresh.publishEffDensity(node.id, effDensity);
-      }
-      if (arrangerActive) {
-        effDensity = Math.min(1, Math.max(0.05, effDensity * sectionIntensity));
-      }
-
-      // frozen (captured) players play their stored take verbatim — outside the generative flow (PRD §5.2)
-      if (data.frozen && Array.isArray((node.data as Record<string, unknown>).frozenPattern)) {
-        const take = (node.data as Record<string, unknown>).frozenPattern as NoteEvent[] | DrumEvent[];
-        this.patterns.set(node.id, take);
-        fresh.publishPattern(node.id, take);
-        if (kind === 'drums' && !kicks) kicks = kickStepsOf(take as DrumEvent[]);
-        continue;
-      }
-
-      const motif = kind === 'melody' ? motifForPlayer(fresh.nodes, edges, node.id) : null;
-      const kickSteps = kind === 'bass' ? kicks : undefined;
-      const signature = JSON.stringify([kind, data.seed, effDensity, data.adventurousness, data.syncopation, data.register, data.articulation, ctx.keyIndex, ctx.scaleId, ctx.colour, ctx.chords.map((c) => c.degree), ctx.chordIdxAtStep, motif, kickSteps]);
-      const changed = signature !== this.signatures.get(node.id);
-
-      if (fresh.conductor.evolveOn && !changed && this.patterns.has(node.id) && (kind === 'melody' || kind === 'arp' || kind === 'bass')) {
-        // melody develops thematically (theme grammar variation depth);
-        // arp/bass keep the coach-guided single-note mutation
-        const evolved =
-          kind === 'melody'
-            ? (computeBasePattern(kind, ctx, data, { densityOverride: effDensity, motif, generation: ++this.evolveGeneration }) as NoteEvent[])
-            : evolveMelody(roleContext(ctx, kind), this.patterns.get(node.id) as NoteEvent[], Number(data.seed), ++this.evolveGeneration);
-        this.patterns.set(node.id, evolved);
-        fresh.publishPattern(node.id, evolved);
-      } else if (changed || force || !this.patterns.has(node.id)) {
-        const pattern = computeBasePattern(kind, ctx, data, { densityOverride: effDensity, motif, kickSteps });
-        this.patterns.set(node.id, pattern);
-        this.signatures.set(node.id, signature);
-        fresh.publishPattern(node.id, pattern);
-      }
-      if (kind === 'drums' && !kicks) kicks = kickStepsOf(this.patterns.get(node.id) as DrumEvent[]);
-    }
-    this.hctx = ctx;
-    this.post({ type: 'patterns', patterns: this.resolve(ctx), immediate: force });
-  }
-
-  /** Resolve theory patterns (degrees) into concrete MIDI for the worklet.
-   *  Only routed players sound — the cables are the signal flow. */
-  private resolve(ctx: HarmonicContext): WirePatterns {
-    const out: WirePatterns = {};
-    for (const node of useLoomStore.getState().nodes) {
-      if (!PLAYER_KINDS.includes(node.type as PlayerKind)) continue;
-      const kind = node.type as PlayerKind;
-      const pattern = this.patterns.get(node.id);
-      if (!pattern) continue;
-      const route = this.routes.get(kind);
-      if (route && !(route.toOut && (route.synth !== null || route.isKit))) continue;
-      if (kind === 'drums') {
-        out.drums = (pattern as DrumEvent[]).map((ev) => ({ step: ev.step, lane: ev.lane, vel: ev.velocity })) as never;
-      } else {
-        const octave = ROLE_OCTAVE[kind] + Number(node.data.register ?? 0);
-        let events = [...(pattern as NoteEvent[])].sort((a, b) => a.step - b.step);
-        if (route?.expression?.glissando && kind !== 'chords') {
-          events = withGlissando(events, roleScale(ctx, kind));
-        }
-        out[kind] = events.map((ev) => ({
-          step: ev.step,
-          midis: eventMidis(ctx, kind, ev.degree, octave),
-          vel: ev.velocity,
-          lenSteps: ev.lengthSteps,
-        }));
-      }
-    }
-    return out;
+    const { messages, signature } = routingMessages(nodes, edges);
+    if (!force && signature === this.routingSig) return;
+    this.routingSig = signature;
+    for (const msg of messages) this.post(msg);
   }
 
   /** dev probe: output RMS, used to verify the DSP core is audibly alive */
@@ -464,6 +194,6 @@ class WasmEngine {
 
 export const engine = new WasmEngine();
 
-if (import.meta.env.DEV) {
+if (import.meta.env.DEV && typeof window !== 'undefined') {
   (window as unknown as Record<string, unknown>).__loomEngine = engine;
 }

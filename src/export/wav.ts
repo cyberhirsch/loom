@@ -1,56 +1,18 @@
 /**
- * Offline WAV bounce (PRD §6.10): renders the current loop through the SAME
- * Rust/WASM DSP core in an OfflineAudioContext — faster than real time.
+ * Offline WAV bounce (PRD §6.10): renders the first bars of the timeline through
+ * the SAME Rust/WASM DSP core in an OfflineAudioContext — faster than real time.
+ * It sends the worklet the very messages live playback sends (src/audio/messages.ts).
  */
 
 import { useLoomStore } from '../graph/store';
-import { contextFor, computeBasePattern, drumKicks, ROLE_OCTAVE } from '../graph/session';
-import { eventMidis } from '../theory/harmony';
-import type { NoteEvent } from '../theory/melody';
-import type { DrumEvent } from '../theory/parts';
-import type { PlayerData, PlayerKind } from '../graph/types';
+import { bounceMessages } from '../audio/messages';
 
-const PLAYER_KINDS: PlayerKind[] = ['melody', 'chords', 'bass', 'drums', 'arp'];
-
-function dbToLinear(db: number): number {
-  return Math.pow(10, db / 20);
-}
-
-/** Resolve current store patterns into the worklet wire format. */
-function resolveWire() {
-  const s = useLoomStore.getState();
-  const ctx = contextFor(s.conductor, s.nodes);
-  const wire: Record<string, unknown> = {};
-  for (const node of s.nodes) {
-    if (!PLAYER_KINDS.includes(node.type as PlayerKind)) continue;
-    const kind = node.type as PlayerKind;
-    const data = node.data as unknown as PlayerData;
-    const pattern =
-      (data.frozen && (data.frozenPattern as NoteEvent[] | DrumEvent[])) ||
-      s.patterns[node.id] ||
-      computeBasePattern(kind, ctx, data, { kickSteps: kind === 'bass' ? drumKicks(s.nodes, ctx) : undefined });
-    if (kind === 'drums') {
-      wire.drums = (pattern as DrumEvent[]).map((ev) => ({ step: ev.step, lane: ev.lane, vel: ev.velocity }));
-    } else {
-      const octave = ROLE_OCTAVE[kind] + Number(data.register ?? 0);
-      wire[kind] = (pattern as NoteEvent[]).map((ev) => ({
-        step: ev.step,
-        midis: eventMidis(ctx, kind, ev.degree, octave),
-        vel: ev.velocity,
-        lenSteps: ev.lengthSteps,
-      }));
-    }
-  }
-  return wire;
-}
-
-export async function bounceWav(loops = 4): Promise<{ rms: number; seconds: number }> {
-  const s = useLoomStore.getState();
-  const tempo = s.conductor.tempo;
+export async function bounceWav(bars = 4): Promise<{ rms: number; seconds: number }> {
+  const { nodes, edges, conductor } = useLoomStore.getState();
   const sr = 48000;
-  const steps = Number(s.conductor.steps) || 16;
-  const loopSeconds = (steps * 60) / (tempo * 4);
-  const seconds = loops * loopSeconds + 1.5; // reverb/release tail
+  const steps = Number(conductor.steps) || 16;
+  const barSeconds = (steps * 60) / (conductor.tempo * 4);
+  const seconds = bars * barSeconds + 1.5; // reverb/release tail
   const offctx = new OfflineAudioContext(2, Math.ceil(seconds * sr), sr);
 
   await offctx.audioWorklet.addModule(new URL('loom-worklet.js', document.baseURI).href);
@@ -65,15 +27,7 @@ export async function bounceWav(loops = 4): Promise<{ rms: number; seconds: numb
     node.port.postMessage({ type: 'wasm', bytes });
   });
 
-  node.port.postMessage({ type: 'tempo', bpm: tempo });
-  node.port.postMessage({ type: 'steps', value: steps });
-  for (const n of s.nodes) {
-    if (!PLAYER_KINDS.includes(n.type as PlayerKind)) continue;
-    node.port.postMessage({ type: 'gain', kind: n.type, value: dbToLinear(Number(n.data.volume)) * 0.4 });
-    node.port.postMessage({ type: 'mute', kind: n.type, value: Boolean(n.data.mute) });
-  }
-  node.port.postMessage({ type: 'patterns', patterns: resolveWire(), immediate: true });
-  node.port.postMessage({ type: 'start' });
+  for (const msg of bounceMessages({ nodes, edges, conductor }, bars)) node.port.postMessage(msg);
 
   const buffer = await offctx.startRendering();
 
@@ -117,6 +71,6 @@ export async function bounceWav(loops = 4): Promise<{ rms: number; seconds: numb
   return { rms, seconds };
 }
 
-if (import.meta.env.DEV) {
+if (import.meta.env.DEV && typeof window !== 'undefined') {
   (window as unknown as Record<string, unknown>).__loomBounce = bounceWav;
 }

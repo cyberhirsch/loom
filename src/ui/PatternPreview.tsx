@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { useLoomStore } from '../graph/store';
-import { computeContext, computeBasePattern, drumKicks, motifForPlayer } from '../graph/session';
+import { renderBar } from '../graph/timeline';
 import type { PlayerData, PlayerKind } from '../graph/types';
 import type { NoteEvent } from '../theory/melody';
 import type { DrumEvent } from '../theory/parts';
@@ -12,22 +12,18 @@ const H = 48;
 export function PatternPreview({ id, kind }: { id: string; kind: PlayerKind }) {
   const published = useLoomStore((s) => s.patterns[id]);
   const conductor = useLoomStore((s) => s.conductor);
-  const chordsSeed = useLoomStore((s) => Number(s.nodes.find((n) => n.type === 'chords')?.data.seed ?? 1));
-  const chordsColour = useLoomStore((s) => s.nodes.find((n) => n.type === 'chords')?.data.colour);
+  const nodes = useLoomStore((s) => s.nodes);
+  const edges = useLoomStore((s) => s.edges);
   const data = useLoomStore((s) => s.nodes.find((n) => n.id === id)?.data) as unknown as PlayerData | undefined;
   const currentStep = useLoomStore((s) => s.currentStep);
 
-  const motif = useLoomStore((s) => (kind === 'melody' ? motifForPlayer(s.nodes, s.edges, id) : null));
-  const drumsNode = useLoomStore((s) => (kind === 'bass' ? s.nodes.find((n) => n.type === 'drums') : undefined));
-
+  // before playback: what the first bar of the timeline will play
   const pattern = useMemo(() => {
     if (data?.frozen && Array.isArray(data.frozenPattern)) return data.frozenPattern;
     if (published) return published;
     if (!data) return [];
-    const ctx = computeContext(conductor, chordsSeed, chordsColour);
-    const kickSteps = drumsNode ? drumKicks([drumsNode], ctx) : undefined;
-    return computeBasePattern(kind, ctx, data, { motif, kickSteps });
-  }, [published, conductor, chordsSeed, chordsColour, data, kind, motif, drumsNode]);
+    return renderBar({ nodes, edges, conductor }, 0).parts[id] ?? [];
+  }, [published, conductor, nodes, edges, data, id]);
 
   const steps = Number(conductor.steps) || 16;
   const cw = W / steps;

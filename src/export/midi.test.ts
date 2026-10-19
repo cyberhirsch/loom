@@ -1,27 +1,47 @@
 import { describe, it, expect } from 'vitest';
 import { buildMidi } from './midi';
-import { buildContext, type HarmonicContext } from '../theory/harmony';
-import { generateMelody } from '../theory/melody';
-import { generateBass, generateDrums } from '../theory/parts';
+import { defaultPatch, type Patch } from '../graph/templates';
+import { renderTimeline, type WireNote } from '../graph/timeline';
 
-function ctx(): HarmonicContext {
-  return buildContext(0, 'ionian', 16, 42);
+const withPlayer = (p: Patch, kind: string, patch: Record<string, unknown>): Patch => ({
+  ...p,
+  nodes: p.nodes.map((n) => (n.type === kind ? { ...n, data: { ...n.data, ...patch } } : n)),
+});
+
+/** walk one MTrk chunk: note-on ticks */
+function noteOnTicks(bytes: Uint8Array, track: number): number[] {
+  let offset = 14;
+  const len = (o: number) => (bytes[o + 4] << 24) | (bytes[o + 5] << 16) | (bytes[o + 6] << 8) | bytes[o + 7];
+  for (let t = 0; t < track; t++) offset += 8 + len(offset);
+  const end = offset + 8 + len(offset);
+  let i = offset + 8;
+  let tick = 0;
+  const onTicks: number[] = [];
+  while (i < end) {
+    let delta = 0;
+    while (bytes[i] & 0x80) delta = (delta << 7) | (bytes[i++] & 0x7f);
+    delta = (delta << 7) | bytes[i++];
+    tick += delta;
+    const status = bytes[i];
+    if (status === 0xff) {
+      i += 3 + bytes[i + 2];
+    } else {
+      if ((status & 0xf0) === 0x90) onTicks.push(tick);
+      i += 3;
+    }
+  }
+  return onTicks;
 }
 
 describe('MIDI export (PRD §6.10 / M4 slice)', () => {
-  it('produces a well-formed type-1 SMF', () => {
-    const c = ctx();
-    const melody = generateMelody(c, { seed: 42, density: 0.6, adventurousness: 0.3, register: 0 });
-    const drums = generateDrums(c, { seed: 42, density: 0.6, syncopation: 0.3 });
-    const bytes = buildMidi(c, [
-      { kind: 'melody', pattern: melody, register: 0 },
-      { kind: 'drums', pattern: drums, register: 0 },
-    ], 102, 2);
+  it('produces a well-formed type-1 SMF: tempo track + one track per sounding part', () => {
+    const bars = renderTimeline(defaultPatch(), 0, 2);
+    const bytes = buildMidi(bars, 102);
 
     // header
     expect(String.fromCharCode(...bytes.slice(0, 4))).toBe('MThd');
     expect((bytes[8] << 8) | bytes[9]).toBe(1); // format 1
-    expect((bytes[10] << 8) | bytes[11]).toBe(3); // tempo + 2 parts
+    expect((bytes[10] << 8) | bytes[11]).toBe(1 + bars[0].audible.length); // tempo + parts
     expect((bytes[12] << 8) | bytes[13]).toBe(480); // PPQ
 
     // walk all track chunks
@@ -37,55 +57,39 @@ describe('MIDI export (PRD §6.10 / M4 slice)', () => {
       offset = end;
       tracks++;
     }
-    expect(tracks).toBe(3);
+    expect(tracks).toBe(1 + bars[0].audible.length);
     expect(offset).toBe(bytes.length);
   });
 
-  it('is deterministic (same seed, same file)', () => {
-    const c = ctx();
-    const melody = generateMelody(c, { seed: 7, density: 0.5, adventurousness: 0.4, register: 0 });
-    const a = buildMidi(c, [{ kind: 'melody', pattern: melody, register: 0 }], 120);
-    const b = buildMidi(c, [{ kind: 'melody', pattern: melody, register: 0 }], 120);
+  it('is deterministic (same project, same file)', () => {
+    const a = buildMidi(renderTimeline(defaultPatch(), 0, 4), 120);
+    const b = buildMidi(renderTimeline(defaultPatch(), 0, 4), 120);
     expect(a).toEqual(b);
   });
 
+  it('muted parts are left out', () => {
+    const muted = withPlayer(defaultPatch(), 'arp', { mute: true });
+    const bars = renderTimeline(muted, 0, 1);
+    const bytes = buildMidi(bars, 120);
+    expect((bytes[10] << 8) | bytes[11]).toBe(1 + bars[0].audible.length);
+    expect(bars[0].audible).not.toContain('arp');
+  });
+
   it('fractional bass lengths keep every note-on on the 16th grid', () => {
-    const c = ctx();
-    const kickSteps = generateDrums(c, { seed: 5, density: 0.7, syncopation: 0.5 }).filter((e) => e.lane === 0).map((e) => e.step);
     for (const articulation of [0.33, 0.77]) {
-      const bass = generateBass(c, { seed: 5, density: 0.9, register: 0, kickSteps, articulation });
-      expect(bass.some((e) => !Number.isInteger(e.lengthSteps * 120))).toBe(true);
-      const loops = 4;
-      const bytes = buildMidi(c, [{ kind: 'bass', pattern: bass, register: 0 }], 120, loops);
-      // second MTrk = bass track; walk its events summing deltas
-      let offset = 14;
-      offset += 8 + ((bytes[offset + 4] << 24) | (bytes[offset + 5] << 16) | (bytes[offset + 6] << 8) | bytes[offset + 7]);
-      const end = offset + 8 + ((bytes[offset + 4] << 24) | (bytes[offset + 5] << 16) | (bytes[offset + 6] << 8) | bytes[offset + 7]);
-      let i = offset + 8;
-      let tick = 0;
-      const onTicks: number[] = [];
-      while (i < end) {
-        let delta = 0;
-        while (bytes[i] & 0x80) delta = (delta << 7) | (bytes[i++] & 0x7f);
-        delta = (delta << 7) | bytes[i++];
-        tick += delta;
-        const status = bytes[i];
-        if (status === 0xff) {
-          i += 3 + bytes[i + 2];
-        } else {
-          if ((status & 0xf0) === 0x90) onTicks.push(tick);
-          i += 3;
-        }
-      }
-      const expected = Array.from({ length: loops }, (_, l) => bass.map((e) => (l * c.steps + e.step) * 120)).flat();
-      expect(onTicks).toEqual(expected);
+      const project = withPlayer(withPlayer(defaultPatch(), 'bass', { articulation, density: 0.9, seed: 5 }), 'drums', { seed: 5, density: 0.7, syncopation: 0.5 });
+      const bars = renderTimeline(project, 0, 4);
+      const bass = bars.map((b) => b.patterns.bass as WireNote[]);
+      expect(bass.flat().some((e) => !Number.isInteger(e.lenSteps * 120))).toBe(true);
+      const bytes = buildMidi(bars, 120);
+      const track = 1 + bars[0].audible.indexOf('bass');
+      const expected = bass.flatMap((evs, l) => evs.map((e) => (l * bars[l].steps + e.step) * 120));
+      expect(noteOnTicks(bytes, track)).toEqual(expected);
     }
   });
 
   it('note-ons all have matching note-offs', () => {
-    const c = ctx();
-    const melody = generateMelody(c, { seed: 99, density: 0.9, adventurousness: 0.7, register: 0 });
-    const bytes = buildMidi(c, [{ kind: 'melody', pattern: melody, register: 0 }], 102);
+    const bytes = buildMidi(renderTimeline(withPlayer(defaultPatch(), 'melody', { seed: 99, density: 0.9, adventurousness: 0.7 }), 0, 1), 102);
     let on = 0;
     let off = 0;
     for (let i = 0; i < bytes.length - 2; i++) {

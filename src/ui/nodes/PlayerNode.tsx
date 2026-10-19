@@ -1,8 +1,8 @@
 import { memo } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { useLoomStore } from '../../graph/store';
-import { contextFor, computeBasePattern, drumKicks } from '../../graph/session';
-import type { PlayerData, PlayerKind } from '../../graph/types';
+import { renderBar } from '../../graph/timeline';
+import type { PlayerKind } from '../../graph/types';
 import { PatternPreview } from '../PatternPreview';
 
 const META: Record<PlayerKind, { icon: string; label: string }> = {
@@ -86,12 +86,7 @@ function PlayerNodeView({ id, type, selected }: NodeProps) {
                 update(id, { frozen: false });
               } else {
                 const s = useLoomStore.getState();
-                const ctx = contextFor(s.conductor, s.nodes);
-                const take =
-                  s.patterns[id] ??
-                  computeBasePattern(kind, ctx, data as unknown as PlayerData, {
-                    kickSteps: kind === 'bass' ? drumKicks(s.nodes, ctx) : undefined,
-                  });
+                const take = s.patterns[id] ?? renderBar({ nodes: s.nodes, edges: s.edges, conductor: s.conductor }, 0).parts[id];
                 update(id, { frozen: true, frozenPattern: take });
               }
             }}

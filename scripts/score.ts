@@ -1,98 +1,37 @@
 /**
  * score — print what Loom's generative engine actually plays, as a readable
- * text score plus musical metrics. The theory engine is pure and seeded, so
- * this is the exact music the AudioWorklet would receive (minus glissando).
- * `heard` runs it through the DSP voice model (src/audio/voiceModel.ts) to
- * count what actually rings: tail-aware clashes and voices sounding per part.
+ * text score plus musical metrics. It renders the real patch (default patch or
+ * template) through the same timeline the AudioWorklet is fed
+ * (src/graph/timeline.ts): arranger, journey, LFO/Tension, evolve, glissando,
+ * routing and mutes included. `heard` runs it through the DSP voice model
+ * (src/audio/voiceModel.ts) to count what actually rings.
  *
  *   npm run score -- [--template default|ambient|lofi|techno] [--key C]
- *                    [--scale minor_pent] [--steps 16] [--loops 1] [--evolve]
+ *                    [--scale minor_pent] [--steps 16] [--bars 1] [--evolve|--no-evolve]
  *                    [--melody 101] [--chords 202] [--bass 303] [--drums 404]
  *                    [--arp 505] [--colour triad|7th|quartal] [--json]
+ *                    [--sweep N [--sweep-player melody|chords|bass|drums|arp]]
+ *
+ * --bars N renders N timeline bars (one bar = one loop of --steps until
+ * bar-based time lands; --loops is an alias). --sweep N renders the patch with
+ * seeds 1..N on every player (or only on --sweep-player) and prints aggregate
+ * metrics as JSON.
  */
 
-import { computeContext, computeBasePattern, kickStepsOf, ROLE_OCTAVE } from '../src/graph/session';
-import { chordAt, chordMidi, eventMidis, isChangeAt, roleContext, type ChordColour, type HarmonicContext } from '../src/theory/harmony';
+import { renderTimeline, type BarRender, type TimelineProject } from '../src/graph/timeline';
+import { defaultPatch, templatePatch, TEMPLATES, type TemplateId } from '../src/graph/templates';
+import { chordAt, chordMidi, isChangeAt, type ChordColour } from '../src/theory/harmony';
 import { NOTE_NAMES, SCALES, type ScaleId } from '../src/theory/scales';
-import { evolveMelody, type NoteEvent } from '../src/theory/melody';
-import type { DrumEvent } from '../src/theory/parts';
-import type { ConductorState, PlayerData, PlayerKind } from '../src/graph/types';
-import { DEFAULT_SCRIPT } from '../src/graph/defaultScript';
-import { parseLoomScript } from '../src/script/loomscript';
+import type { PlayerKind } from '../src/graph/types';
+import type { WireDrum, WireNote } from '../src/graph/timeline';
 import { partInstruments, ringingAt, simulateVoices, tailClashes, type Envelope, type ModelEvent, type VoiceKind } from '../src/audio/voiceModel';
+import {
+  aggregate, bassRootOnChangePct, chordPcsAt, clashes, drumStats, longestSameRun, maxRestSteps, nn, partMetrics, pc,
+  pitchedStream, registerBounds, similarity, sweepMetrics, variation, voiceMotionPerChange, PITCHED,
+} from './scoreMetrics';
 
 // ---------------------------------------------------------------------------
-// patches (mirrors DEFAULT_SCRIPT + TEMPLATES in src/graph/store.ts)
-// ---------------------------------------------------------------------------
-
-type Players = Record<PlayerKind, Partial<PlayerData>>;
-interface Patch {
-  keyIndex: number;
-  scaleId: ScaleId;
-  tempo: number;
-  players: Players;
-}
-
-const BASE: Players = {
-  melody: { seed: 101, density: 0.55, adventurousness: 0.35, register: 0 },
-  chords: { seed: 202, density: 0.5, register: 0 },
-  bass: { seed: 303, density: 0.5, register: 0 },
-  drums: { seed: 404, density: 0.6, syncopation: 0.3 },
-  arp: { seed: 505, density: 0.45, register: 1 },
-};
-
-const PATCHES: Record<string, Patch> = {
-  default: { keyIndex: 0, scaleId: 'minor_pent', tempo: 102, players: BASE },
-  ambient: {
-    keyIndex: 2, scaleId: 'lydian', tempo: 74,
-    players: {
-      melody: { seed: 811, density: 0.3, adventurousness: 0.25, register: 0 },
-      chords: { seed: 812, density: 0.55, register: 0 },
-      bass: { seed: 813, density: 0.25, register: 0 },
-      drums: { seed: 814, density: 0.2, syncopation: 0.1, mute: true },
-      arp: { seed: 815, density: 0.35, register: 1 },
-    },
-  },
-  lofi: {
-    keyIndex: 9, scaleId: 'dorian', tempo: 84,
-    players: {
-      melody: { seed: 921, density: 0.45, adventurousness: 0.4, register: 0 },
-      chords: { seed: 922, density: 0.5, register: 0 },
-      bass: { seed: 923, density: 0.5, register: 0 },
-      drums: { seed: 924, density: 0.55, syncopation: 0.45 },
-      arp: { seed: 925, density: 0.3, register: 0, mute: true },
-    },
-  },
-  techno: {
-    keyIndex: 0, scaleId: 'minor_pent', tempo: 128,
-    players: {
-      melody: { seed: 731, density: 0.35, adventurousness: 0.5, register: 0, mute: true },
-      chords: { seed: 732, density: 0.3, register: 0 },
-      bass: { seed: 733, density: 0.75, register: 0, articulation: 0.5 },
-      drums: { seed: 734, density: 0.85, syncopation: 0.5 },
-      arp: { seed: 735, density: 0.8, register: 1 },
-    },
-  },
-};
-
-/** Instruments come from the default patch itself (every template keeps its
- *  synth nodes): the Synth node and Expression each part is cabled through. */
-const VOICE_KINDS: VoiceKind[] = ['melody', 'chords', 'bass', 'arp'];
-const instruments = (() => {
-  const r = parseLoomScript(DEFAULT_SCRIPT);
-  if (!r.ok) throw new Error('default LoomScript is invalid');
-  const parts = partInstruments(r.project.nodes, r.project.edges);
-  const env = {} as Record<VoiceKind, Envelope>;
-  const glide: Partial<Record<VoiceKind, boolean>> = {};
-  for (const kind of VOICE_KINDS) {
-    env[kind] = parts[kind].env;
-    glide[kind] = parts[kind].portamento > 0;
-  }
-  return { env, glide };
-})();
-
-// ---------------------------------------------------------------------------
-// args
+// args → the patch
 // ---------------------------------------------------------------------------
 
 const argv = process.argv.slice(2);
@@ -102,53 +41,125 @@ const opt = (name: string) => {
   return i >= 0 ? argv[i + 1] : undefined;
 };
 
-const patch: Patch = JSON.parse(JSON.stringify(PATCHES[opt('template') ?? 'default'] ?? PATCHES.default));
-if (opt('key')) patch.keyIndex = Math.max(0, NOTE_NAMES.indexOf(opt('key')!.toUpperCase()));
-if (opt('scale')) patch.scaleId = opt('scale') as ScaleId;
-for (const k of ['melody', 'chords', 'bass', 'drums', 'arp'] as PlayerKind[]) {
-  if (opt(k)) patch.players[k].seed = Number(opt(k));
+const KINDS: PlayerKind[] = ['melody', 'chords', 'bass', 'drums', 'arp'];
+const templateName = opt('template') ?? 'default';
+const base = templateName in TEMPLATES ? templatePatch(templateName as TemplateId) : defaultPatch();
+
+function withOverrides(seeds: Partial<Record<PlayerKind, number>> = {}): TimelineProject {
+  const p = JSON.parse(JSON.stringify(base)) as TimelineProject;
+  const c = p.conductor;
+  if (opt('key')) c.keyIndex = Math.max(0, NOTE_NAMES.indexOf(opt('key')!.toUpperCase()));
+  if (opt('scale')) c.scaleId = opt('scale') as ScaleId;
+  if (opt('steps')) c.steps = Number(opt('steps'));
+  if (flag('evolve')) c.evolveOn = true;
+  if (flag('no-evolve')) c.evolveOn = false;
+  c.liveKeyIndex = c.keyIndex;
+  c.liveScaleId = c.scaleId;
+  for (const n of p.nodes) {
+    const kind = n.type as PlayerKind;
+    if (!KINDS.includes(kind)) continue;
+    if (opt(kind)) n.data.seed = Number(opt(kind));
+    if (seeds[kind] !== undefined) n.data.seed = seeds[kind];
+    if (kind === 'chords' && opt('colour')) n.data.colour = opt('colour') as ChordColour;
+  }
+  return p;
 }
-if (opt('colour')) patch.players.chords.colour = opt('colour') as ChordColour;
-const steps = Number(opt('steps') ?? 16);
-const loops = Number(opt('loops') ?? 1);
-const evolve = flag('evolve');
+
+const project = withOverrides();
+const nBars = Math.max(1, Number(opt('bars') ?? opt('loops') ?? 1));
 const asJson = flag('json');
 
-const fullData = (p: Partial<PlayerData>): PlayerData => ({
-  seed: 1, density: 0.5, adventurousness: 0.35, syncopation: 0.3, register: 0, mute: false, volume: -9, ...p,
-}) as PlayerData;
-
-const conductor: ConductorState = {
-  keyIndex: patch.keyIndex, scaleId: patch.scaleId, tempo: patch.tempo, steps,
-  evolveOn: evolve, journeyOn: false, modEvery: 4, journeyLabel: 'home',
-  liveKeyIndex: patch.keyIndex, liveScaleId: patch.scaleId,
-};
-
 // ---------------------------------------------------------------------------
-// resolve theory → concrete MIDI exactly like wasmEngine.resolve()
+// sweep
 // ---------------------------------------------------------------------------
 
-interface Sounding {
-  step: number;
-  midis: number[];
-  vel: number;
-  len: number;
+if (opt('sweep')) {
+  const n = Number(opt('sweep'));
+  const only = opt('sweep-player') as PlayerKind | undefined;
+  const rows = [];
+  for (let seed = 1; seed <= n; seed++) {
+    const seeds: Partial<Record<PlayerKind, number>> = {};
+    for (const k of only ? [only] : KINDS) seeds[k] = seed;
+    rows.push(sweepMetrics(renderTimeline(withOverrides(seeds), 0, nBars)));
+  }
+  console.log(JSON.stringify({ patch: templateName, scale: project.conductor.scaleId, steps: Number(project.conductor.steps), bars: nBars, sweptPlayers: only ?? 'all', ...aggregate(rows) }, null, 1));
+  process.exit(0);
 }
 
-function resolvePitched(kind: PlayerKind, ctx: HarmonicContext, pattern: NoteEvent[], register: number): Sounding[] {
-  const octave = ROLE_OCTAVE[kind] + register;
-  return [...pattern]
-    .sort((a, b) => a.step - b.step)
-    .map((ev) => ({
-      step: ev.step,
-      midis: eventMidis(ctx, kind as Exclude<PlayerKind, 'drums'>, ev.degree, octave),
-      vel: ev.velocity,
-      len: ev.lengthSteps,
-    }));
+// ---------------------------------------------------------------------------
+// render
+// ---------------------------------------------------------------------------
+
+const bars: BarRender[] = renderTimeline(project, 0, nBars);
+const steps = Number(project.conductor.steps) || 16;
+const tempo = project.conductor.tempo;
+const totalSteps = bars.reduce((a, b) => a + b.steps, 0);
+
+/** the stream's sounding notes per part, from the wire patterns */
+const sounding = (bar: BarRender, kind: PlayerKind) => (bar.audible.includes(kind) ? bar.patterns[kind] : undefined);
+
+// ---------------------------------------------------------------------------
+// heard: the voice model over the rendered bars
+// ---------------------------------------------------------------------------
+
+const VOICE_KINDS: VoiceKind[] = ['melody', 'chords', 'bass', 'arp'];
+const instruments = (() => {
+  const parts = partInstruments(project.nodes, project.edges);
+  const env = {} as Record<VoiceKind, Envelope>;
+  const glide: Partial<Record<VoiceKind, boolean>> = {};
+  for (const kind of VOICE_KINDS) {
+    env[kind] = parts[kind].env;
+    glide[kind] = parts[kind].portamento > 0;
+  }
+  return { env, glide };
+})();
+
+/** What is actually heard: the bars through the DSP voice model (real ADSR tails, mono
+ *  lead/bass, pad choke), preceded by the last bar as a wrap-around so tails ringing into
+ *  bar 1 count. Clashes/voices only count above -20 dB. */
+function tails() {
+  const stepSec = 60 / (tempo * 4);
+  const played = [bars[bars.length - 1], ...bars];
+  const events: ModelEvent[] = [];
+  let t0 = 0;
+  for (const bar of played) {
+    for (const kind of VOICE_KINDS) {
+      for (const n of (sounding(bar, kind) ?? []) as WireNote[]) {
+        events.push({ kind, t: (t0 + n.step) * stepSec, midis: n.midis, lenSec: n.lenSteps * stepSec });
+      }
+    }
+    t0 += bar.steps;
+  }
+  const from = played[0].steps * stepSec;
+  const to = t0 * stepSec;
+  const heard = simulateVoices(events, instruments.env, instruments.glide, to + 3);
+  const c = tailClashes(heard, from, to);
+  const voicesRinging: Partial<Record<VoiceKind, { mean: number; max: number }>> = {};
+  for (const kind of VOICE_KINDS) {
+    if (!bars[0].audible.includes(kind)) continue;
+    let sum = 0;
+    let max = 0;
+    let n = 0;
+    // sample between grid points: exactly on an onset the new note is still in its attack
+    for (let t = from + stepSec / 8; t < to; t += stepSec / 4, n++) {
+      const r = ringingAt(heard, kind, t);
+      sum += r;
+      max = Math.max(max, r);
+    }
+    voicesRinging[kind] = { mean: +(sum / n).toFixed(2), max };
+  }
+  const nb = totalSteps / 16;
+  return {
+    tailClashesPerBar: +(c.cross / nb).toFixed(2),
+    tailClashesSamePartPerBar: +(c.same / nb).toFixed(2),
+    voicesRinging,
+    examples: c.examples,
+  };
 }
 
-const pc = (m: number) => ((m % 12) + 12) % 12;
-const nn = (m: number) => `${NOTE_NAMES[pc(m)]}${Math.floor(m / 12) - 1}`;
+// ---------------------------------------------------------------------------
+// metrics
+// ---------------------------------------------------------------------------
 
 function chordName(midis: number[]): string {
   const root = pc(midis[0]);
@@ -163,207 +174,69 @@ function chordName(midis: number[]): string {
   return s !== undefined ? `${NOTE_NAMES[root]}${s}` : `${NOTE_NAMES[root]}?{${midis.map((m) => NOTE_NAMES[pc(m)]).join('-')}}`;
 }
 
-// ---------------------------------------------------------------------------
-// generate N loops (evolve mirrors the engine: melody regenerates by
-// generation; arp/bass mutate one note per loop)
-// ---------------------------------------------------------------------------
-
-// drums first: the bass locks to their kicks (muted drums still lead it, as in the engine)
-const ORDER: PlayerKind[] = ['drums', 'arp', 'melody', 'chords', 'bass'];
-const chordsSeed = Number(patch.players.chords.seed);
-const ctx = computeContext(conductor, chordsSeed, patch.players.chords.colour);
-const kickSteps = kickStepsOf(computeBasePattern('drums', ctx, fullData(patch.players.drums)) as DrumEvent[]);
-
-interface Loop {
-  pitched: Partial<Record<PlayerKind, Sounding[]>>;
-  drums: DrumEvent[] | null;
-  raw: Partial<Record<PlayerKind, NoteEvent[] | DrumEvent[]>>;
-}
-
-const history: Loop[] = [];
-let generation = 0;
-let prevRaw: Loop['raw'] = {};
-for (let l = 0; l < loops; l++) {
-  const raw: Loop['raw'] = {};
-  for (const kind of ORDER) {
-    const data = fullData(patch.players[kind]);
-    if (data.mute) continue;
-    if (l > 0 && evolve && (kind === 'melody' || kind === 'arp' || kind === 'bass')) {
-      raw[kind] =
-        kind === 'melody'
-          ? computeBasePattern(kind, ctx, data, { generation: ++generation })
-          : evolveMelody(roleContext(ctx, kind as 'arp' | 'bass'), prevRaw[kind] as NoteEvent[], data.seed, ++generation);
-    } else raw[kind] = l > 0 && prevRaw[kind] ? prevRaw[kind] : computeBasePattern(kind, ctx, data, { kickSteps: kind === 'bass' ? kickSteps : undefined });
-  }
-  const pitched: Loop['pitched'] = {};
-  for (const kind of ['melody', 'chords', 'bass', 'arp'] as PlayerKind[]) {
-    if (raw[kind]) pitched[kind] = resolvePitched(kind, ctx, raw[kind] as NoteEvent[], Number(patch.players[kind].register ?? 0));
-  }
-  history.push({ pitched, drums: (raw.drums as DrumEvent[]) ?? null, raw });
-  prevRaw = raw;
-}
-
-// ---------------------------------------------------------------------------
-// metrics
-// ---------------------------------------------------------------------------
-
-/** pitch classes of the chord sounding at a step (its colour tones included) */
-const chordPcsAt = (s: number) => new Set([...chordAt(ctx, s).pcs, ...(chordAt(ctx, s).ext ?? [])]);
-
-function partMetrics(kind: PlayerKind, notes: Sounding[]) {
-  const flat = notes.flatMap((n) => n.midis.map((m) => ({ ...n, m })));
-  const mel = notes.map((n) => n.midis[0]);
-  const ivs = mel.slice(1).map((m, i) => Math.abs(m - mel[i]));
-  const chordTone = flat.filter((n) => chordPcsAt(n.step).has(pc(n.m))).length;
-  const strong = flat.filter((n) => n.step % 4 === 0);
-  const strongCT = strong.filter((n) => chordPcsAt(n.step).has(pc(n.m))).length;
-  return {
-    kind,
-    notes: notes.length,
-    distinctPitches: new Set(flat.map((n) => n.m)).size,
-    rangeSemis: flat.length ? Math.max(...flat.map((n) => n.m)) - Math.min(...flat.map((n) => n.m)) : 0,
-    lowest: flat.length ? nn(Math.min(...flat.map((n) => n.m))) : '-',
-    highest: flat.length ? nn(Math.max(...flat.map((n) => n.m))) : '-',
-    meanInterval: ivs.length ? +(ivs.reduce((a, b) => a + b, 0) / ivs.length).toFixed(2) : 0,
-    maxLeap: ivs.length ? Math.max(...ivs) : 0,
-    onBeatPct: notes.length ? Math.round((notes.filter((n) => n.step % 4 === 0).length / notes.length) * 100) : 0,
-    chordTonePct: flat.length ? Math.round((chordTone / flat.length) * 100) : 0,
-    strongBeatChordTonePct: strong.length ? Math.round((strongCT / strong.length) * 100) : null,
-    meanLenSteps: notes.length ? +(notes.reduce((a, n) => a + n.len, 0) / notes.length).toFixed(2) : 0,
-  };
-}
-
-/** semitone clashes: two parts sounding pitches a minor 2nd / major 7th apart at the same time */
-function clashes(loop: Loop) {
-  const sounding: Array<{ kind: string; m: number; from: number; to: number }> = [];
-  for (const [kind, notes] of Object.entries(loop.pitched)) {
-    for (const n of notes!) for (const m of n.midis) sounding.push({ kind, m, from: n.step, to: n.step + Math.max(1, n.len) });
-  }
-  let count = 0;
-  const examples: string[] = [];
-  for (let i = 0; i < sounding.length; i++) {
-    for (let j = i + 1; j < sounding.length; j++) {
-      const a = sounding[i];
-      const b = sounding[j];
-      if (a.kind === b.kind) continue;
-      if (a.from >= b.to || b.from >= a.to) continue;
-      const d = Math.abs(pc(a.m) - pc(b.m));
-      if (d === 1 || d === 11) {
-        count++;
-        if (examples.length < 6) examples.push(`step ${Math.max(a.from, b.from)}: ${a.kind} ${nn(a.m)} vs ${b.kind} ${nn(b.m)}`);
-      }
-    }
-  }
-  return { count, examples };
-}
-
-/** What is actually heard: the loops run through the DSP voice model (real
- *  ADSR tails, mono lead/bass, pad choke), preceded by one wrap-around loop so
- *  tails ringing into loop 1 count. Clashes/voices only count above -20 dB. */
-function tails(hist: Loop[]) {
-  const stepSec = 60 / (patch.tempo * 4);
-  const loopSec = steps * stepSec;
-  const played = [hist[hist.length - 1], ...hist];
-  const events: ModelEvent[] = [];
-  played.forEach((loop, l) => {
-    for (const kind of VOICE_KINDS) {
-      for (const n of loop.pitched[kind] ?? []) {
-        events.push({ kind, t: (l * steps + n.step) * stepSec, midis: n.midis, lenSec: n.len * stepSec });
-      }
-    }
-  });
-  const from = loopSec;
-  const to = played.length * loopSec;
-  const heard = simulateVoices(events, instruments.env, instruments.glide, to + 3);
-  const bars = (hist.length * steps) / 16;
-  const c = tailClashes(heard, from, to);
-  const voicesRinging: Partial<Record<VoiceKind, { mean: number; max: number }>> = {};
-  for (const kind of VOICE_KINDS) {
-    if (!hist[0].pitched[kind]) continue;
-    let sum = 0;
-    let max = 0;
-    let n = 0;
-    // sample between grid points: exactly on an onset the new note is still in its attack
-    for (let t = from + stepSec / 8; t < to; t += stepSec / 4, n++) {
-      const r = ringingAt(heard, kind, t);
-      sum += r;
-      max = Math.max(max, r);
-    }
-    voicesRinging[kind] = { mean: +(sum / n).toFixed(2), max };
-  }
-  return {
-    tailClashesPerBar: +(c.cross / bars).toFixed(2),
-    tailClashesSamePartPerBar: +(c.same / bars).toFixed(2),
-    voicesRinging,
-    examples: c.examples,
-  };
-}
-
-function similarity(a: Sounding[] | undefined, b: Sounding[] | undefined): number | null {
-  if (!a || !b) return null;
-  const key = (n: Sounding) => `${n.step}:${n.midis.join('.')}`;
-  const A = new Set(a.map(key));
-  const B = new Set(b.map(key));
-  const inter = [...A].filter((x) => B.has(x)).length;
-  const union = new Set([...A, ...B]).size;
-  return union ? +(inter / union).toFixed(2) : 1;
-}
-
-const first = history[0];
-const kick = new Set((first.drums ?? []).filter((d) => d.lane === 0).map((d) => d.step));
-const bassNotes = first.pitched.bass ?? [];
-const changeSteps = ctx.chordIdxAtStep.map((_, i) => i).filter((i) => isChangeAt(ctx, i));
-const chordChanges = changeSteps.length;
-const secondsPerLoop = (steps * 60) / (patch.tempo * 4);
+const first = bars[0];
+const ctx0 = first.ctx;
+const changeSteps = ctx0.chordIdxAtStep.map((_, i) => i).filter((i) => isChangeAt(ctx0, i));
+const secondsPerLoop = (steps * 60) / (tempo * 4);
+const kickSet = new Set(((sounding(first, 'drums') ?? []) as WireDrum[]).filter((d) => d.lane === 0).map((d) => d.step));
+const bassNotes = pitchedStream(bars, 'bass');
+const stream = Object.fromEntries(PITCHED.map((k) => [k, pitchedStream(bars, k)]));
 
 const metrics = {
-  patch: opt('template') ?? 'default',
-  key: NOTE_NAMES[patch.keyIndex],
-  scale: patch.scaleId,
-  tempo: patch.tempo,
+  patch: templateName,
+  key: NOTE_NAMES[project.conductor.keyIndex],
+  scale: project.conductor.scaleId,
+  tempo,
   steps,
-  bars: steps / 16,
+  bars: nBars,
   secondsPerLoop: +secondsPerLoop.toFixed(2),
-  harmony: {
-    progression: ctx.chords.length,
-    chordChangesPerLoop: chordChanges,
-    chordChangesPerBar: +(chordChanges / (steps / 16)).toFixed(2),
-    secondsPerChord: +(secondsPerLoop / chordChanges).toFixed(2),
-    chords: changeSteps.map((i) => `@${i} ${chordName(chordMidi(ctx, chordAt(ctx, i).degree, 0))}`),
-    roman: changeSteps.map((i) => `${chordAt(ctx, i).roman} ${chordAt(ctx, i).func}`),
-  },
-  parts: Object.entries(first.pitched).map(([k, notes]) => partMetrics(k as PlayerKind, notes!)),
-  drums: first.drums
-    ? {
-        kicks: first.drums.filter((d) => d.lane === 0).map((d) => d.step),
-        snares: first.drums.filter((d) => d.lane === 1).map((d) => d.step),
-        hats: first.drums.filter((d) => d.lane === 2).length,
-        velocitiesDistinct: new Set(first.drums.map((d) => d.velocity)).size,
-      }
+  evolve: project.conductor.evolveOn,
+  audible: first.audible,
+  form: bars.some((b) => b.sectionId >= 0 || b.keyIndex !== project.conductor.keyIndex)
+    ? bars.map((b) => `${b.absBar + 1}:${b.sectionId >= 0 ? `s${b.sectionId}` : '-'} ${NOTE_NAMES[b.keyIndex]} ${b.scaleId}`)
     : null,
-  bassKickLock: bassNotes.length
-    ? Math.round((bassNotes.filter((n) => kick.has(n.step)).length / bassNotes.length) * 100)
+  harmony: {
+    progression: ctx0.chords.length,
+    chordChangesPerLoop: changeSteps.length,
+    chordChangesPerBar: +(changeSteps.length / (steps / 16)).toFixed(2),
+    secondsPerChord: +(secondsPerLoop / changeSteps.length).toFixed(2),
+    chords: changeSteps.map((i) => `@${i} ${chordName(chordMidi(ctx0, chordAt(ctx0, i).degree, 0))}`),
+    roman: changeSteps.map((i) => `${chordAt(ctx0, i).roman} ${chordAt(ctx0, i).func}`),
+  },
+  parts: PITCHED.filter((k) => bars.some((b) => b.audible.includes(k))).map((k) => partMetrics(bars, k)),
+  drums: drumStats(bars),
+  bassKickLock: bassNotes.length && kickSet.size
+    ? Math.round((pitchedStream([first], 'bass').filter((n) => kickSet.has(n.step)).length / Math.max(1, pitchedStream([first], 'bass').length)) * 100)
     : null,
   bassOnRootPct: bassNotes.length
-    ? Math.round(
-        (bassNotes.filter((n) => pc(n.midis[0]) === chordAt(ctx, n.step).rootPc).length / bassNotes.length) * 100,
-      )
+    ? Math.round((bassNotes.filter((n) => pc(n.midis[0]) === chordAt(bars[n.bar].ctx, n.step).rootPc).length / bassNotes.length) * 100)
     : null,
-  semitoneClashes: clashes(first),
-  heard: tails(history),
+  bassRootOnChangePct: bassRootOnChangePct(bars),
+  longestSameRun: stream.melody.length ? longestSameRun(stream.melody) : null,
+  melodyMaxRestSteps: stream.melody.length ? maxRestSteps(stream.melody, totalSteps) : null,
+  voiceMotionPerChange: voiceMotionPerChange(stream.chords),
+  registerBounds: Object.fromEntries(PITCHED.map((k) => [k, registerBounds(stream[k])])),
+  semitoneClashes: clashes(bars),
+  heard: tails(),
+  variation: variation(bars),
   loopToLoopSimilarity:
-    history.length > 1
-      ? history.slice(1).map((h, i) => ({
-          loop: i + 2,
-          melody: similarity(history[i].pitched.melody, h.pitched.melody),
-          bass: similarity(history[i].pitched.bass, h.pitched.bass),
-          arp: similarity(history[i].pitched.arp, h.pitched.arp),
+    bars.length > 1
+      ? bars.slice(1).map((b, i) => ({
+          bar: i + 2,
+          melody: similarity(sounding(bars[i], 'melody'), sounding(b, 'melody')),
+          bass: similarity(sounding(bars[i], 'bass'), sounding(b, 'bass')),
+          arp: similarity(sounding(bars[i], 'arp'), sounding(b, 'arp')),
         }))
       : null,
 };
 
 if (asJson) {
-  console.log(JSON.stringify({ metrics, loops: history.map((h) => h.pitched) }, null, 1));
+  const loops = bars.map((b) =>
+    Object.fromEntries(
+      PITCHED.filter((k) => sounding(b, k)).map((k) => [k, (sounding(b, k) as WireNote[]).map((n) => ({ step: n.step, midis: n.midis, vel: n.vel, len: n.lenSteps }))]),
+    ),
+  );
+  console.log(JSON.stringify({ metrics, loops, bars: bars.map((b) => ({ absBar: b.absBar, sectionId: b.sectionId, keyIndex: b.keyIndex, scaleId: b.scaleId, audible: b.audible, patterns: b.patterns })) }, null, 1));
   process.exit(0);
 }
 
@@ -373,52 +246,59 @@ if (asJson) {
 
 const CELL = 5;
 const pad = (s: string) => (s.length >= CELL ? s.slice(0, CELL) : s + ' '.repeat(CELL - s.length));
-const ruler = () => {
+const sep = (s: number) => (s % 16 === 0 ? '|' : s % 4 === 0 ? ':' : ' ');
+const ruler = (n: number) => {
   let out = '         ';
-  for (let s = 0; s < steps; s++) out += (s % 16 === 0 ? '|' : s % 4 === 0 ? ':' : ' ') + pad(String(s));
+  for (let s = 0; s < n; s++) out += sep(s) + pad(String(s));
   return out;
 };
 
-function rowFor(label: string, notes: Sounding[] | undefined, mark: (n: Sounding, m: number) => string = () => '') {
-  const cells = new Array<string>(steps).fill('.');
+function rowFor(label: string, bar: BarRender, kind: PlayerKind, mark: (n: WireNote, m: number) => string = () => '') {
+  const notes = sounding(bar, kind) as WireNote[] | undefined;
+  const cells = new Array<string>(bar.steps).fill(notes ? '.' : ' ');
+  // grace notes: glissando steps the player's own take does not have
+  const nodeId = project.nodes.find((n) => n.type === kind)?.id;
+  const own = new Set(((nodeId ? bar.parts[nodeId] : undefined) ?? []).map((e) => e.step));
   for (const n of notes ?? []) {
-    cells[n.step] = n.midis.length > 1 ? chordName(n.midis) : nn(n.midis[0]) + mark(n, n.midis[0]);
-    for (let k = 1; k < n.len && n.step + k < steps; k++) if (cells[n.step + k] === '.') cells[n.step + k] = '~';
+    const grace = kind !== 'chords' && own.size > 0 && !own.has(n.step) ? '^' : '';
+    cells[n.step] = n.midis.length > 1 ? chordName(n.midis) : nn(n.midis[0]) + mark(n, n.midis[0]) + grace;
+    for (let k = 1; k < n.lenSteps && n.step + k < bar.steps; k++) if (cells[n.step + k] === '.') cells[n.step + k] = '~';
   }
   let out = pad(label).padEnd(9);
-  for (let s = 0; s < steps; s++) out += (s % 16 === 0 ? '|' : s % 4 === 0 ? ':' : ' ') + pad(cells[s]);
-  return out;
+  for (let s = 0; s < bar.steps; s++) out += sep(s) + pad(cells[s]);
+  return out + (notes ? '' : '  (silent: muted or unrouted)');
 }
 
-function drumRow(label: string, lane: 0 | 1 | 2, drums: DrumEvent[] | null) {
+function drumRow(label: string, lane: 0 | 1 | 2, bar: BarRender) {
+  const drums = sounding(bar, 'drums') as WireDrum[] | undefined;
   let out = pad(label).padEnd(9);
-  for (let s = 0; s < steps; s++) {
+  for (let s = 0; s < bar.steps; s++) {
     const hit = drums?.find((d) => d.step === s && d.lane === lane);
-    out += (s % 16 === 0 ? '|' : s % 4 === 0 ? ':' : ' ') + pad(hit ? (hit.velocity >= 0.8 ? 'X' : 'x') : '.');
+    out += sep(s) + pad(drums ? (hit ? (hit.vel >= 0.8 ? 'X' : 'x') : '.') : ' ');
   }
-  return out;
+  return out + (drums ? '' : '  (silent: muted or unrouted)');
 }
 
-const nonChord = (n: Sounding, m: number) => (chordPcsAt(n.step).has(pc(m)) ? '' : '*');
-
-console.log(`\n${metrics.patch} · ${metrics.key} ${SCALES[patch.scaleId].name} · ${patch.tempo} bpm · ${steps} steps (${metrics.bars} bar) = ${metrics.secondsPerLoop}s per loop`);
-console.log(`(* = not a tone of the sounding chord, ~ = held)\n`);
-for (let l = 0; l < history.length; l++) {
-  const h = history[l];
-  if (history.length > 1) console.log(`--- loop ${l + 1} ---`);
-  console.log(ruler());
-  const chordRow = ctx.chordIdxAtStep.map((_, i) => (isChangeAt(ctx, i) ? chordName(chordMidi(ctx, chordAt(ctx, i).degree, 0)) : ''));
+const sections = (project.nodes.find((n) => n.type === 'arranger')?.data.sections ?? []) as Array<{ name: string }>;
+console.log(`\n${metrics.patch} · ${metrics.key} ${SCALES[project.conductor.scaleId].name} · ${tempo} bpm · ${steps} steps (${steps / 16} bar) = ${metrics.secondsPerLoop}s per loop${project.conductor.evolveOn ? ' · evolve on' : ''}`);
+console.log(`(* = not a tone of the sounding chord, ^ = glissando grace note, ~ = held)\n`);
+for (const bar of bars) {
+  const nonChord = (n: WireNote, m: number) => (chordPcsAt(bar.ctx, n.step).has(pc(m)) ? '' : '*');
+  if (bars.length > 1 || bar.sectionId >= 0) {
+    const section = bar.sectionId >= 0 ? ` · section "${sections[bar.sectionId]?.name ?? bar.sectionId}"` : '';
+    console.log(`--- bar ${bar.absBar + 1}${section} · ${NOTE_NAMES[bar.keyIndex]} ${SCALES[bar.scaleId].name} ---`);
+  }
+  console.log(ruler(bar.steps));
   let cr = pad('harmony').padEnd(9);
-  for (let s = 0; s < steps; s++) cr += (s % 16 === 0 ? '|' : s % 4 === 0 ? ':' : ' ') + pad(chordRow[s] || '');
+  for (let s = 0; s < bar.steps; s++) cr += sep(s) + pad(isChangeAt(bar.ctx, s) ? chordName(chordMidi(bar.ctx, chordAt(bar.ctx, s).degree, 0)) : '');
   console.log(cr);
-  console.log(rowFor('melody', h.pitched.melody, nonChord));
-  console.log(rowFor('arp', h.pitched.arp, nonChord));
-  console.log(rowFor('chords', h.pitched.chords));
-  console.log(rowFor('bass', h.pitched.bass, nonChord));
-  console.log(drumRow('kick', 0, h.drums));
-  console.log(drumRow('snare', 1, h.drums));
-  console.log(drumRow('hat', 2, h.drums));
+  console.log(rowFor('melody', bar, 'melody', nonChord));
+  console.log(rowFor('arp', bar, 'arp', nonChord));
+  console.log(rowFor('chords', bar, 'chords'));
+  console.log(rowFor('bass', bar, 'bass', nonChord));
+  console.log(drumRow('kick', 0, bar));
+  console.log(drumRow('snare', 1, bar));
+  console.log(drumRow('hat', 2, bar));
   console.log('');
 }
-const { loops: _omit, ...printable } = { ...metrics, loops: undefined };
-console.log(JSON.stringify(printable, null, 1));
+console.log(JSON.stringify(metrics, null, 1));

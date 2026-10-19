@@ -13,6 +13,7 @@ import { randomSeed } from '../theory/rng';
 import { DEFAULT_PLAYER, parseLoomScript, serializeProject, type LoomProject, type ScriptError } from '../script/loomscript';
 import { SINGLETON_TYPES } from './catalog';
 import { DEFAULT_SCRIPT } from './defaultScript';
+import { TEMPLATES, templatePatch, type TemplateId } from './templates';
 
 /** phrase-length choices (steps per loop) — editable on the Conductor */
 export const PHRASE_CHOICES = [8, 16, 32];
@@ -67,7 +68,7 @@ interface LoomStore {
   applyScript: (text: string) => ScriptError[] | null;
 }
 
-export type TemplateId = 'ambient' | 'lofi' | 'techno';
+export type { TemplateId };
 
 export interface Scene {
   name: string;
@@ -337,90 +338,11 @@ export const useLoomStore = create<LoomStore>((set, get) => ({
     return null;
   },
   applyTemplate: (id) => {
-    const t = TEMPLATES[id];
-    if (!t) return;
-    const nodes = initialNodes.map((n) => {
-      const clone = JSON.parse(JSON.stringify(n)) as LoomNode;
-      if (t.players[n.type as string]) clone.data = { ...clone.data, ...t.players[n.type as string] };
-      if (n.type === 'arranger' && t.arranger) clone.data = { ...clone.data, ...t.arranger };
-      return clone;
-    });
-    const edges: Edge[] = t.tensionToMelody
-      ? [
-          ...initialEdges,
-          {
-            id: 'tension-tpl',
-            source: 'tension-tpl-node',
-            sourceHandle: 'cv-out',
-            target: 'melody',
-            targetHandle: 'density-in',
-            className: 'edge-signal',
-          },
-        ]
-      : [...initialEdges];
-    if (t.tensionToMelody) {
-      nodes.push({ id: 'tension-tpl-node', type: 'tension', position: { x: 340, y: 300 }, data: { depth: 0.4 } });
-    }
-    set({
-      nodes,
-      edges,
-      conductor: { ...defaultConductor, ...t.conductor, liveKeyIndex: t.conductor.keyIndex ?? 0, liveScaleId: t.conductor.scaleId ?? 'minor_pent', journeyLabel: 'home' },
-      patterns: {},
-      effDensity: {},
-    });
+    if (!TEMPLATES[id]) return;
+    const t = templatePatch(id, { nodes: initialNodes, edges: initialEdges, conductor: defaultConductor });
+    set({ nodes: t.nodes, edges: t.edges, conductor: t.conductor, patterns: {}, effDensity: {} });
   },
 }));
-
-/** Ensemble templates (PRD §6.11): open one and a patch is already playing-ready. */
-interface Template {
-  conductor: Partial<ConductorState>;
-  players: Record<string, Record<string, unknown>>;
-  arranger?: Record<string, unknown>;
-  tensionToMelody?: boolean;
-}
-
-const TEMPLATES: Record<TemplateId, Template> = {
-  ambient: {
-    conductor: { keyIndex: 2, scaleId: 'lydian', tempo: 74, evolveOn: true, journeyOn: false },
-    players: {
-      melody: { seed: 811, density: 0.3, adventurousness: 0.25, volume: -10 },
-      chords: { seed: 812, density: 0.55, volume: -12 },
-      bass: { seed: 813, density: 0.25, volume: -14 },
-      drums: { seed: 814, density: 0.2, syncopation: 0.1, mute: true },
-      arp: { seed: 815, density: 0.35, volume: -18, register: 1 },
-    },
-    tensionToMelody: true,
-  },
-  lofi: {
-    conductor: { keyIndex: 9, scaleId: 'dorian', tempo: 84, evolveOn: false, journeyOn: false },
-    players: {
-      melody: { seed: 921, density: 0.45, adventurousness: 0.4, volume: -10 },
-      chords: { seed: 922, density: 0.5, volume: -13 },
-      bass: { seed: 923, density: 0.5, volume: -9 },
-      drums: { seed: 924, density: 0.55, syncopation: 0.45, volume: -11, mute: false },
-      arp: { seed: 925, density: 0.3, volume: -20, mute: true },
-    },
-  },
-  techno: {
-    conductor: { keyIndex: 0, scaleId: 'minor_pent', tempo: 128, evolveOn: false, journeyOn: false },
-    players: {
-      melody: { seed: 731, density: 0.35, adventurousness: 0.5, volume: -14, mute: true },
-      chords: { seed: 732, density: 0.3, volume: -18 },
-      bass: { seed: 733, density: 0.75, volume: -8, articulation: 0.5 },
-      drums: { seed: 734, density: 0.85, syncopation: 0.5, volume: -6, mute: false },
-      arp: { seed: 735, density: 0.8, volume: -13, register: 1, mute: false },
-    },
-    arranger: {
-      enabled: true,
-      sections: [
-        { name: 'groove', loops: 4, intensity: 0.8, journeyStop: -1 },
-        { name: 'build', loops: 4, intensity: 1.1, journeyStop: -1 },
-        { name: 'peak', loops: 4, intensity: 1.35, journeyStop: 1 },
-        { name: 'breakdown', loops: 2, intensity: 0.5, journeyStop: 2 },
-      ],
-    },
-  },
-};
 
 if (import.meta.env.DEV && typeof window !== 'undefined') {
   (window as unknown as Record<string, unknown>).__loomStore = useLoomStore;
@@ -432,10 +354,3 @@ useLoomStore.subscribe((state, prev) => {
     scheduleSave(() => useLoomStore.getState());
   }
 });
-
-/** Player ids whose density input is fed by a modulator (LFO or Tension). */
-export function densityModulations(nodes: LoomNode[], edges: Edge[]): Array<{ playerId: string; sourceId: string }> {
-  return edges
-    .filter((e) => e.targetHandle === 'density-in' && e.sourceHandle === 'cv-out')
-    .map((e) => ({ playerId: e.target, sourceId: e.source }));
-}

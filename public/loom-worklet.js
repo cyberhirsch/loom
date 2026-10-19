@@ -19,7 +19,9 @@ class LoomProcessor extends AudioWorkletProcessor {
     this.step = -1;
     this.loop = 0;
     this.patterns = null; // { kind: [{step, midis[], vel, lenSteps}] } + drums [{step,lane,vel}]
-    this.pending = null;
+    this.absBar = 0; // timeline bar of `patterns`, echoed when it starts sounding
+    this.queue = []; // upcoming bars [{absBar, patterns}], ascending
+    this.fresh = false; // the first downbeat after 'start' plays the current bar
     this.pendingSteps = null;
     this.delayCfg = { division: 3, feedback: 0.35, mix: 0.25 }; // division in steps (3 = dotted 8th)
     this.port.onmessage = (e) => this.onMessage(e.data);
@@ -37,8 +39,16 @@ class LoomProcessor extends AudioWorkletProcessor {
         break;
       }
       case 'patterns':
-        if (msg.immediate || !this.playing) this.patterns = msg.patterns;
-        else this.pending = msg.patterns;
+        // immediate: play now (transport start); otherwise queue the bar for its downbeat
+        if (msg.immediate) {
+          this.patterns = msg.patterns;
+          this.absBar = msg.absBar ?? 0;
+          this.queue = [];
+        } else {
+          this.queue = this.queue.filter((b) => b.absBar !== msg.absBar);
+          this.queue.push({ absBar: msg.absBar, patterns: msg.patterns });
+          this.queue.sort((a, b) => a.absBar - b.absBar);
+        }
         break;
       case 'tempo':
         this.tempo = msg.bpm;
@@ -78,6 +88,7 @@ class LoomProcessor extends AudioWorkletProcessor {
         this.sampleCursor = 0;
         this.step = -1;
         this.loop = 0;
+        this.fresh = true;
         this.playing = true;
         break;
       case 'stop':
@@ -94,6 +105,16 @@ class LoomProcessor extends AudioWorkletProcessor {
       case 'liveUpd':
         if (this.wasm) this.wasm.live_note_update(msg.id, msg.midi, msg.pressure, msg.timbre);
         break;
+    }
+  }
+
+  /** double-buffered swap at the bar line; a late bar repeats the current one */
+  nextBar() {
+    while (this.queue.length && this.queue[0].absBar <= this.absBar) this.queue.shift();
+    const next = this.queue.shift();
+    if (next) {
+      this.patterns = next.patterns;
+      this.absBar = next.absBar;
     }
   }
 
@@ -152,12 +173,10 @@ class LoomProcessor extends AudioWorkletProcessor {
             this.pendingSteps = null;
             this.sampleCursor = 0;
           }
-          if (this.pending) {
-            this.patterns = this.pending;
-            this.pending = null;
-          }
+          if (this.fresh) this.fresh = false;
+          else this.nextBar();
           this.loop += 1;
-          this.port.postMessage({ type: 'loop', loop: this.loop });
+          this.port.postMessage({ type: 'loop', loop: this.loop, absBar: this.absBar });
         }
         this.triggerStep(stepNow);
         this.port.postMessage({ type: 'step', step: stepNow });
