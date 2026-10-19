@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run",
+    "score": "esbuild scripts/score.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/loom-score.mjs --log-level=warning && node node_modules/.cache/loom-score.mjs",
     "build:dsp": "cargo build --manifest-path loom-dsp/Cargo.toml --target wasm32-unknown-unknown --release && node -e \"require('fs').copyFileSync('loom-dsp/target/wasm32-unknown-unknown/release/loom_dsp.wasm','public/loom-dsp.wasm')\""
   },
   "dependencies": {
